@@ -24,3 +24,8 @@ artifacts/models/
 
 # Nested third-party repository metadata snapshots
 **/.git.hidden/
+
+# Keep published installable artifacts in-repo
+!apk/
+!apk/*.apk
+!apk/*.sha256
