@@ -1,0 +1,26 @@
+# Android/Gradle build outputs
+android-app/.gradle/
+android-app/**/build/
+android-app/whisperlib/.cxx/
+.gradle/
+.idea/
+*.iml
+local.properties
+
+# Local artifacts and debug dumps
+artifacts/
+*.log
+*.tmp
+*.xml
+
+# Packaged binaries
+*.apk
+*.aab
+*.ap_
+
+# Local model payloads (downloaded on-device/host, not source-controlled)
+*.litertlm
+artifacts/models/
+
+# Nested third-party repository metadata snapshots
+**/.git.hidden/

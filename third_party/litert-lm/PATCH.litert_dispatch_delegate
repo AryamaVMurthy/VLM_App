@@ -1,0 +1,142 @@
+diff --git litert/runtime/dispatch/dispatch_delegate.cc litert/runtime/dispatch/dispatch_delegate.cc
+index 67a5ace0..eae1de3a 100644
+--- litert/runtime/dispatch/dispatch_delegate.cc
++++ litert/runtime/dispatch/dispatch_delegate.cc
+@@ -113,6 +113,7 @@ TfLiteStatus DispatchDelegate::Initialize(TfLiteOpaqueContext* context) {
+     LITERT_LOG(LITERT_ERROR, "Failed to initialize Dispatch API: %s",
+                status.Error().Message().c_str());
+     has_dispatch_runtime_ = false;
++    return kTfLiteError;
+   } else {
+     has_dispatch_runtime_ = true;
+   }
+@@ -124,7 +125,11 @@ const char* DispatchDelegate::Name() const { return kDelegateName.data(); }
+ std::unique_ptr<tflite::SimpleOpaqueDelegateKernelInterface>
+ DispatchDelegate::CreateDelegateKernelInterface() {
+   if (!has_dispatch_runtime_) {
+-    LITERT_FATAL(
++    // Do not abort the process when dispatch runtime is unavailable.
++    // Returning nullptr lets delegate application fail gracefully so callers can
++    // surface a recoverable backend error and apply explicit fallback policy.
++    LITERT_LOG(
++        LITERT_ERROR,
+         "Failed to create a dispatch delegate kernel: No usable Dispatch "
+         "runtime found");
+     return nullptr;
+@@ -143,8 +148,8 @@ DispatchDelegate::CreateDelegateKernelInterface() {
+     kernels_.push_back(kernel_ptr);
+     return std::move(*kernel);
+   } else {
+-    LITERT_FATAL("Failed to create a dispatch delegate kernel: %s",
+-                 kernel.Error().Message().c_str());
++    LITERT_LOG(LITERT_ERROR, "Failed to create a dispatch delegate kernel: %s",
++               kernel.Error().Message().c_str());
+     return nullptr;
+   }
+ }
+diff --git litert/vendors/qualcomm/core/backends/htp_backend.cc litert/vendors/qualcomm/core/backends/htp_backend.cc
+index 740200f7..32f6269b 100644
+--- litert/vendors/qualcomm/core/backends/htp_backend.cc
++++ litert/vendors/qualcomm/core/backends/htp_backend.cc
+@@ -6,6 +6,8 @@
+ #include <array>
+ #include <cstddef>
+ #include <cstdint>
++#include <cstdlib>
++#include <cstring>
+ #include <memory>
+ #include <optional>
+ #include <utility>
+@@ -420,14 +422,18 @@ bool HtpBackend::Init(const Options& options, std::optional<SocInfo> soc_info) {
+                soc_info_.soc_name);
+ 
+   // Device Handle
++  // Avoid forcing a specific SoC custom config here. On some SDK/device
++  // combinations this causes QNN deviceCreate to return INVALID_CONFIG even
++  // though platform info was detected successfully.
+   std::vector<QnnDevice_CustomConfig_t> device_custom_configs;
+-  QnnHtpDevice_CustomConfig_t* htp_device_custom_config =
+-      &AllocateHtpDeviceConfig();
+-  htp_device_custom_config->option = QNN_HTP_DEVICE_CONFIG_OPTION_SOC;
+-  htp_device_custom_config->socModel =
+-      static_cast<uint32_t>(soc_info_.soc_model);
+-  device_custom_configs.emplace_back(
+-      static_cast<QnnDevice_CustomConfig_t>(htp_device_custom_config));
++  const char* signed_pd_support_env =
++      std::getenv("LITERT_QNN_SIGNED_PD_SUPPORT");
++  const bool signed_pd_support =
++      signed_pd_support_env != nullptr &&
++      (std::strcmp(signed_pd_support_env, "1") == 0 ||
++       std::strcmp(signed_pd_support_env, "true") == 0 ||
++       std::strcmp(signed_pd_support_env, "TRUE") == 0);
++  QNN_LOG_INFO("QNN signedPdSupport override: %d", signed_pd_support ? 1 : 0);
+ 
+ #if defined(__x86_64__) || defined(_M_X64)
+   std::vector<QnnDevice_PlatformInfo_t*> device_platform_infos;
+@@ -448,8 +454,7 @@ bool HtpBackend::Init(const Options& options, std::optional<SocInfo> soc_info) {
+       &AllocHtpDeviceInfoExtension();
+   htp_device_info_extension->devType = QNN_HTP_DEVICE_TYPE_ON_CHIP;
+   htp_device_info_extension->onChipDevice.vtcmSize = soc_info_.vtcm_size_in_mb;
+-  // TODO(jiunkaiy): Given by user, default value is unsigned pd
+-  htp_device_info_extension->onChipDevice.signedPdSupport = false;
++  htp_device_info_extension->onChipDevice.signedPdSupport = signed_pd_support;
+   htp_device_info_extension->onChipDevice.socModel =
+       static_cast<uint32_t>(soc_info_.soc_model);
+   htp_device_info_extension->onChipDevice.arch =
+@@ -469,6 +474,56 @@ bool HtpBackend::Init(const Options& options, std::optional<SocInfo> soc_info) {
+   device_platform_infos.emplace_back(device_platform_info);
+ #else
+   std::vector<QnnDevice_PlatformInfo_t*> device_platform_infos = {};
++  const char* disable_platform_info_env =
++      std::getenv("LITERT_QNN_DISABLE_DEVICE_PLATFORM_INFO");
++  const bool disable_platform_info =
++      disable_platform_info_env != nullptr &&
++      (std::strcmp(disable_platform_info_env, "1") == 0 ||
++       std::strcmp(disable_platform_info_env, "true") == 0 ||
++       std::strcmp(disable_platform_info_env, "TRUE") == 0);
++
++  if (disable_platform_info) {
++    QNN_LOG_WARNING(
++        "Skipping QNN device platform info config because "
++        "LITERT_QNN_DISABLE_DEVICE_PLATFORM_INFO is enabled.");
++  } else {
++    QnnDevice_PlatformInfo_t* device_platform_info =
++        &AllocateDevicePlatformInfo();
++    device_platform_info->version = QNN_DEVICE_PLATFORM_INFO_VERSION_1;
++    device_platform_info->v1.numHwDevices = 1;
++
++    QnnDevice_HardwareDeviceInfo_t* hardware_device_info =
++        &AllocateDeviceHardwareInfo();
++    hardware_device_info->version = QNN_DEVICE_HARDWARE_DEVICE_INFO_VERSION_1;
++    hardware_device_info->v1.deviceId = 0;
++    hardware_device_info->v1.deviceType = 0;
++    hardware_device_info->v1.numCores = 1;
++
++    QnnHtpDevice_DeviceInfoExtension_t* htp_device_info_extension =
++        &AllocHtpDeviceInfoExtension();
++    htp_device_info_extension->devType = QNN_HTP_DEVICE_TYPE_ON_CHIP;
++    htp_device_info_extension->onChipDevice.vtcmSize =
++        soc_info_.vtcm_size_in_mb;
++    htp_device_info_extension->onChipDevice.signedPdSupport =
++        signed_pd_support;
++    htp_device_info_extension->onChipDevice.socModel =
++        static_cast<uint32_t>(soc_info_.soc_model);
++    htp_device_info_extension->onChipDevice.arch =
++        static_cast<QnnHtpDevice_Arch_t>(soc_info_.dsp_arch);
++    // TODO(jiunkaiy): For Htp, dlbcSupport is true
++    htp_device_info_extension->onChipDevice.dlbcSupport = true;
++    hardware_device_info->v1.deviceInfoExtension = htp_device_info_extension;
++
++    QnnDevice_CoreInfo_t* device_core_info = &AllocateDeviceCoreInfo();
++    device_core_info->version = QNN_DEVICE_CORE_INFO_VERSION_1;
++    device_core_info->v1.coreId = 0;
++    device_core_info->v1.coreType = 0;
++    device_core_info->v1.coreInfoExtension = nullptr;
++    hardware_device_info->v1.cores = device_core_info;
++
++    device_platform_info->v1.hwDevices = hardware_device_info;
++    device_platform_infos.emplace_back(device_platform_info);
++  }
+ #endif
+ 
+   std::vector<const QnnDevice_Config_t*> device_configs;
