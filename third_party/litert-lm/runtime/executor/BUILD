@@ -191,11 +191,35 @@ cc_library(
 )
 
 cc_library(
+    name = "qualcomm_npu_options",
+    srcs = ["qualcomm_npu_options.cc"],
+    hdrs = ["qualcomm_npu_options.h"],
+    deps = [
+        "@litert//litert/cc:litert_expected",
+        "@litert//litert/cc:litert_macros",
+        "@litert//litert/cc:litert_options",
+        "@litert//litert/cc/options:litert_qualcomm_options",
+    ],
+)
+
+cc_test(
+    name = "qualcomm_npu_options_test",
+    srcs = ["qualcomm_npu_options_test.cc"],
+    deps = [
+        ":qualcomm_npu_options",
+        "@com_google_googletest//:gtest_main",
+        "@litert//litert/cc:litert_options",
+        "@litert//litert/cc/options:litert_qualcomm_options",
+    ],
+)
+
+cc_library(
     name = "llm_litert_compiled_model_cache_utils",
     srcs = ["llm_litert_compiled_model_cache_utils.cc"],
     hdrs = ["llm_litert_compiled_model_cache_utils.h"],
     deps = [
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
@@ -509,8 +533,10 @@ cc_library(
         ":litert_compiled_model_executor_utils",
         ":llm_executor",
         ":llm_executor_io_types",
+        ":llm_litert_compiled_model_cache_utils",
         ":llm_executor_processed_tokens",
         ":llm_executor_settings",
+        ":qualcomm_npu_options",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log:absl_log",
@@ -676,6 +702,7 @@ cc_library(
         ":executor_settings_base",
         ":litert_compiled_model_executor_utils",
         ":llm_executor_io_types",
+        ":qualcomm_npu_options",
         ":vision_executor",
         ":vision_executor_settings",
         ":vision_executor_utils",

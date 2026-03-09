@@ -27,10 +27,49 @@
 #include "litert/cc/litert_tensor_buffer.h"  // from @litert
 #include "runtime/components/constrained_decoding/constrained_decoder.h"
 #include "runtime/util/logging_tensor_buffer.h"
+#include "runtime/util/status_macros.h"  // IWYU pragma: keep
 
 namespace litert::lm {
 
 constexpr char kFieldIndent[] = "  ";
+
+absl::Status ExecutorTextData::CachedTextEmbeddings::Validate() const {
+  if (token_count < 0) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("CachedTextEmbeddings::token_count must be non-negative, "
+                     "but got: ",
+                     token_count));
+  }
+  if (floats_per_token <= 0) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("CachedTextEmbeddings::floats_per_token must be "
+                     "positive, but got: ",
+                     floats_per_token));
+  }
+  if (values.size() !=
+      static_cast<size_t>(token_count) *
+          static_cast<size_t>(floats_per_token)) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("CachedTextEmbeddings::values size ", values.size(),
+                     " does not match token_count * floats_per_token = ",
+                     token_count, " * ", floats_per_token, "."));
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<absl::Span<const float>>
+ExecutorTextData::CachedTextEmbeddings::GetTokenEmbedding(
+    int token_index) const {
+  RETURN_IF_ERROR(Validate());
+  if (token_index < 0 || token_index >= token_count) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("token_index must be in [0, ", token_count,
+                     "), but got: ", token_index));
+  }
+  const size_t offset =
+      static_cast<size_t>(token_index) * static_cast<size_t>(floats_per_token);
+  return absl::MakeConstSpan(values).subspan(offset, floats_per_token);
+}
 
 ExecutorTextData::ExecutorTextData(::litert::TensorBuffer&& token_ids)
     : token_ids_(std::move(token_ids)) {}
@@ -47,9 +86,30 @@ void ExecutorTextData::SetTokenIds(::litert::TensorBuffer&& token_ids) {
   token_ids_ = std::move(token_ids);
 }
 
+void ExecutorTextData::SetCachedTextEmbeddings(
+    CachedTextEmbeddings&& cached_text_embeddings) {
+  cached_text_embeddings_ = std::move(cached_text_embeddings);
+}
+
+void ExecutorTextData::SetCachedTextEmbeddings(
+    std::optional<CachedTextEmbeddings>&& cached_text_embeddings) {
+  cached_text_embeddings_ = std::move(cached_text_embeddings);
+}
+
 std::ostream& operator<<(std::ostream& os, const ExecutorTextData& text_data) {
   os << "ExecutorTextData: {\n"
-     << kFieldIndent << "TokenIds: " << text_data.GetTokenIds() << "\n"
+     << kFieldIndent << "TokenIds: " << text_data.GetTokenIds() << "\n";
+  os << kFieldIndent << "CachedTextEmbeddings: ";
+  if (text_data.GetCachedTextEmbeddings().has_value()) {
+    const auto& cached_text_embeddings =
+        text_data.GetCachedTextEmbeddings().value();
+    os << "{ token_count=" << cached_text_embeddings.token_count
+       << ", floats_per_token=" << cached_text_embeddings.floats_per_token
+       << " }";
+  } else {
+    os << "nullopt";
+  }
+  os << "\n"
      << "}";
   return os;
 }
@@ -283,6 +343,34 @@ ExecutorInputs::GetMutableTextTokenIdsPtr() {
         "TokenIds).");
   }
   return &(text_data_->GetMutableTokenIds());
+}
+
+absl::StatusOr<const ExecutorTextData::CachedTextEmbeddings*>
+ExecutorInputs::GetCachedTextEmbeddingsPtr() const {
+  if (!text_data_.has_value()) {
+    return absl::NotFoundError(
+        "ExecutorInputs::text_data_ is not set (required for cached text "
+        "embeddings).");
+  }
+  if (!text_data_->GetCachedTextEmbeddings().has_value()) {
+    return absl::NotFoundError(
+        "ExecutorInputs::text_data_.cached_text_embeddings_ is not set.");
+  }
+  return &text_data_->GetCachedTextEmbeddings().value();
+}
+
+absl::StatusOr<ExecutorTextData::CachedTextEmbeddings*>
+ExecutorInputs::GetMutableCachedTextEmbeddingsPtr() {
+  if (!text_data_.has_value()) {
+    return absl::NotFoundError(
+        "ExecutorInputs::text_data_ is not set (required for mutable cached "
+        "text embeddings).");
+  }
+  if (!text_data_->GetMutableCachedTextEmbeddings().has_value()) {
+    return absl::NotFoundError(
+        "ExecutorInputs::text_data_.cached_text_embeddings_ is not set.");
+  }
+  return &text_data_->GetMutableCachedTextEmbeddings().value();
 }
 
 absl::StatusOr<const ::litert::TensorBuffer*>

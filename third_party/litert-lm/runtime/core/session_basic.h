@@ -30,6 +30,7 @@
 #include "absl/status/statusor.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "absl/synchronization/mutex.h"  // from @com_google_absl
+#include "runtime/components/embedding_lookup/embedding_lookup_manager.h"
 #include "runtime/components/sampler.h"
 #include "runtime/components/stop_token_detector.h"
 #include "runtime/components/tokenizer.h"
@@ -62,6 +63,14 @@ class SessionBasic : public Engine::Session {
   static absl::StatusOr<std::unique_ptr<SessionBasic>> Create(
       LlmExecutor* absl_nonnull executor, Tokenizer* absl_nonnull tokenizer,
       VisionExecutor* vision_executor, AudioExecutor* audio_executor,
+      const SessionConfig& session_config,
+      std::optional<BenchmarkInfo> benchmark_info,
+      ThreadPool* absl_nonnull worker_thread_pool);
+
+  static absl::StatusOr<std::unique_ptr<SessionBasic>> Create(
+      LlmExecutor* absl_nonnull executor, Tokenizer* absl_nonnull tokenizer,
+      VisionExecutor* vision_executor, AudioExecutor* audio_executor,
+      std::unique_ptr<EmbeddingLookupManager> prompt_embedding_lookup_manager,
       const SessionConfig& session_config,
       std::optional<BenchmarkInfo> benchmark_info,
       ThreadPool* absl_nonnull worker_thread_pool);
@@ -150,6 +159,8 @@ class SessionBasic : public Engine::Session {
                         Tokenizer* absl_nonnull tokenizer,
                         VisionExecutor* vision_executor,
                         AudioExecutor* audio_executor,
+                        std::unique_ptr<EmbeddingLookupManager>
+                            prompt_embedding_lookup_manager,
                         std::unique_ptr<Sampler> sampler,
                         const SessionConfig& session_config,
                         std::optional<BenchmarkInfo> benchmark_info,
@@ -159,6 +170,8 @@ class SessionBasic : public Engine::Session {
         tokenizer_(*tokenizer),
         vision_executor_(vision_executor),
         audio_executor_(audio_executor),
+        prompt_embedding_lookup_manager_(
+            std::move(prompt_embedding_lookup_manager)),
         sampler_(std::move(sampler)),
         session_config_(session_config),
         benchmark_info_(benchmark_info),
@@ -189,6 +202,9 @@ class SessionBasic : public Engine::Session {
 
   // The audio executor used for run the LLM for prefill/decode.
   AudioExecutor* audio_executor_;
+
+  // Optional real text embedder used to build prompt caches before pruning.
+  std::unique_ptr<EmbeddingLookupManager> prompt_embedding_lookup_manager_;
 
   // The session config used for the session.
   std::unique_ptr<Sampler> sampler_;

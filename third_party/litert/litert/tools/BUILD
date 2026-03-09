@@ -779,6 +779,24 @@ cc_binary(
     ],
 )
 
+cc_binary(
+    name = "subset_signatures_main",
+    srcs = ["subset_signatures_main.cc"],
+    visibility = ["//litert:litert_internal_users"],
+    deps = [
+        "//litert/cc:litert_expected",
+        "//litert/cc:litert_macros",
+        "//litert/core/model",
+        "//litert/core/model:model_load",
+        "//litert/core/model:model_serialize",
+        "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/flags:parse",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
+    ],
+)
+
 # We create a library for benchmark_main.cc to faciliate the creation of a
 # customized benchmark model binary that only needs linking with extra
 # dependency, e.g., enabling creating of benchmark binaries with a custom

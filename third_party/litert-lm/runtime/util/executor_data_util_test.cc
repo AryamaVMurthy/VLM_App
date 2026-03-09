@@ -43,6 +43,249 @@ using ::litert::TensorBuffer;
 using ::testing::ElementsAre;
 using ::testing::status::StatusIs;
 
+TEST(ExecutorDataUtilTest, BuildUniformTokenSelectionPreservesEndpoints) {
+  ASSERT_OK_AND_ASSIGN(auto token_indices,
+                       BuildUniformTokenSelection(/*total_tokens=*/5,
+                                                  /*target_tokens=*/3));
+  EXPECT_THAT(token_indices, ElementsAre(0, 2, 4));
+}
+
+TEST(ExecutorDataUtilTest,
+     SelectExecutorVisionTokensSlicesEmbeddingsAndPerLayerEmbeddings) {
+  ExecutorVisionData vision_data;
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto embeddings,
+      CopyToTensorBuffer<float>({1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0},
+                                {1, 1, 4, 2}));
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto per_layer_embeddings,
+      CopyToTensorBuffer<float>(
+          {101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0, 108.0,
+           201.0, 202.0, 203.0, 204.0, 205.0, 206.0, 207.0, 208.0},
+          {2, 4, 2}));
+  vision_data.SetEmbeddings(std::move(embeddings));
+  vision_data.SetPerLayerEmbeddings(std::move(per_layer_embeddings));
+
+  ASSERT_OK_AND_ASSIGN(auto pruned_vision_data,
+                       SelectExecutorVisionTokens(vision_data, {1, 3}));
+  ASSERT_OK_AND_ASSIGN(auto embeddings_ptr,
+                       pruned_vision_data.GetEmbeddingsPtr());
+  LITERT_ASSERT_OK_AND_ASSIGN(auto embeddings_span,
+                              ReferTensorBufferAsSpan<float>(*embeddings_ptr));
+  EXPECT_THAT(TensorBufferDims(*embeddings_ptr), ElementsAre(1, 1, 2, 2));
+  EXPECT_THAT(std::vector<float>(embeddings_span.begin(), embeddings_span.end()),
+              ElementsAre(3.0, 4.0, 7.0, 8.0));
+
+  ASSERT_OK_AND_ASSIGN(auto per_layer_embeddings_ptr,
+                       pruned_vision_data.GetPerLayerEmbeddingsPtr());
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto per_layer_embeddings_span,
+      ReferTensorBufferAsSpan<float>(*per_layer_embeddings_ptr));
+  EXPECT_THAT(TensorBufferDims(*per_layer_embeddings_ptr),
+              ElementsAre(2, 2, 2));
+  EXPECT_THAT(std::vector<float>(per_layer_embeddings_span.begin(),
+                                 per_layer_embeddings_span.end()),
+              ElementsAre(103.0, 104.0, 107.0, 108.0, 203.0, 204.0, 207.0,
+                          208.0));
+}
+
+TEST(ExecutorDataUtilTest, PruneExecutorVisionDataUsesUniformBudget) {
+  ExecutorVisionData vision_data;
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto embeddings,
+      CopyToTensorBuffer<float>({1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0},
+                                {1, 1, 4, 2}));
+  vision_data.SetEmbeddings(std::move(embeddings));
+
+  ASSERT_OK_AND_ASSIGN(auto pruned_vision_data,
+                       PruneExecutorVisionData(vision_data,
+                                               /*target_tokens=*/2));
+  ASSERT_OK_AND_ASSIGN(auto embeddings_ptr,
+                       pruned_vision_data.GetEmbeddingsPtr());
+  LITERT_ASSERT_OK_AND_ASSIGN(auto embeddings_span,
+                              ReferTensorBufferAsSpan<float>(*embeddings_ptr));
+  EXPECT_THAT(TensorBufferDims(*embeddings_ptr), ElementsAre(1, 1, 2, 2));
+  EXPECT_THAT(std::vector<float>(embeddings_span.begin(), embeddings_span.end()),
+              ElementsAre(1.0, 2.0, 7.0, 8.0));
+}
+
+TEST(ExecutorDataUtilTest,
+     BuildPromptConditionedTokenSelectionPrefersPromptAlignedTokens) {
+  ExecutorVisionData vision_data;
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto embeddings,
+      CopyToTensorBuffer<float>({1.0, 0.0, 0.9, 0.1, 0.0, 1.0, 0.6, 0.8},
+                                {1, 1, 4, 2}));
+  vision_data.SetEmbeddings(std::move(embeddings));
+
+  VisionTokenPruningConfig config;
+  config.strategy = VisionTokenPruningStrategy::kPromptConditionedV1;
+  config.prompt_similarity_weight = 1.0f;
+  config.salience_weight = 0.0f;
+  config.redundancy_penalty_weight = 0.0f;
+  PromptConditioningSignals prompt_conditioning_signals{
+      .pooled_prompt_features = {1.0f, 0.0f},
+      .normalized_prompt_token_features = {1.0f, 0.0f},
+      .prompt_token_count = 1,
+      .feature_dim = 2,
+  };
+
+  ASSERT_OK_AND_ASSIGN(
+      auto decision,
+      BuildVisionTokenPruningDecision(
+          vision_data, /*target_tokens=*/2, &prompt_conditioning_signals,
+          config));
+  EXPECT_EQ(decision.strategy,
+            VisionTokenPruningStrategy::kPromptConditionedV1);
+  EXPECT_THAT(decision.token_indices, ElementsAre(0, 1));
+}
+
+TEST(ExecutorDataUtilTest,
+     BuildPromptConditioningVectorUsesCachedTextEmbeddings) {
+  CachedTextEmbeddings cached_text_embeddings;
+  cached_text_embeddings.token_count = 2;
+  cached_text_embeddings.floats_per_token = 2;
+  cached_text_embeddings.values = {1.0f, 0.0f, 0.0f, 1.0f};
+
+  ASSERT_OK_AND_ASSIGN(
+      auto prompt_features,
+      BuildPromptConditioningVector(cached_text_embeddings, /*feature_dim=*/2));
+  EXPECT_THAT(prompt_features, ElementsAre(testing::FloatNear(0.7071067f, 1e-5),
+                                           testing::FloatNear(0.7071067f, 1e-5)));
+}
+
+TEST(ExecutorDataUtilTest,
+     BuildPromptConditioningSignalsPreservesPerTokenTextEmbeddings) {
+  CachedTextEmbeddings cached_text_embeddings;
+  cached_text_embeddings.token_count = 2;
+  cached_text_embeddings.floats_per_token = 2;
+  cached_text_embeddings.values = {3.0f, 0.0f, 0.0f, 4.0f};
+
+  ASSERT_OK_AND_ASSIGN(
+      auto signals,
+      BuildPromptConditioningSignals(cached_text_embeddings, /*feature_dim=*/2));
+  EXPECT_EQ(signals.prompt_token_count, 2);
+  EXPECT_EQ(signals.feature_dim, 2);
+  EXPECT_THAT(signals.pooled_prompt_features,
+              ElementsAre(testing::FloatNear(0.6f, 1e-5),
+                          testing::FloatNear(0.8f, 1e-5)));
+  EXPECT_THAT(signals.normalized_prompt_token_features,
+              ElementsAre(testing::FloatNear(1.0f, 1e-5),
+                          testing::FloatNear(0.0f, 1e-5),
+                          testing::FloatNear(0.0f, 1e-5),
+                          testing::FloatNear(1.0f, 1e-5)));
+}
+
+TEST(ExecutorDataUtilTest,
+     BuildPromptConditionedTokenSelectionUsesPromptTokenAttentionProxy) {
+  ExecutorVisionData vision_data;
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto embeddings,
+      CopyToTensorBuffer<float>({1.0f, 0.0f, 0.0f, 1.0f, 0.8f, 0.8f, -1.0f, 0.0f},
+                                {1, 1, 4, 2}));
+  vision_data.SetEmbeddings(std::move(embeddings));
+
+  VisionTokenPruningConfig config;
+  config.strategy = VisionTokenPruningStrategy::kPromptConditionedV1;
+  config.prompt_similarity_weight = 1.0f;
+  config.salience_weight = 0.0f;
+  config.redundancy_penalty_weight = 0.0f;
+
+  CachedTextEmbeddings cached_text_embeddings;
+  cached_text_embeddings.token_count = 2;
+  cached_text_embeddings.floats_per_token = 2;
+  cached_text_embeddings.values = {1.0f, 0.0f, 0.0f, 1.0f};
+  ASSERT_OK_AND_ASSIGN(
+      auto prompt_conditioning_signals,
+      BuildPromptConditioningSignals(cached_text_embeddings, /*feature_dim=*/2));
+
+  ASSERT_OK_AND_ASSIGN(
+      auto decision,
+      BuildVisionTokenPruningDecision(vision_data, /*target_tokens=*/2,
+                                      &prompt_conditioning_signals, config));
+  EXPECT_THAT(decision.token_indices, ElementsAre(0, 2));
+  EXPECT_GT(decision.mean_prompt_similarity, 0.25f);
+}
+
+TEST(ExecutorDataUtilTest,
+     BuildPromptConditionedTokenSelectionUsesAttentionProxyCoverage) {
+  ExecutorVisionData vision_data;
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto embeddings,
+      CopyToTensorBuffer<float>({1.0f, 0.0f, 0.0f, 1.0f, 0.8f, 0.6f, -1.0f, 0.0f},
+                                {1, 1, 4, 2}));
+  vision_data.SetEmbeddings(std::move(embeddings));
+
+  VisionTokenPruningConfig config;
+  config.strategy = VisionTokenPruningStrategy::kPromptConditionedV1;
+  config.prompt_similarity_weight = 1.0f;
+  config.salience_weight = 0.0f;
+  config.redundancy_penalty_weight = 0.0f;
+
+  CachedTextEmbeddings cached_text_embeddings;
+  cached_text_embeddings.token_count = 2;
+  cached_text_embeddings.floats_per_token = 2;
+  cached_text_embeddings.values = {1.0f, 0.0f, 0.0f, 1.0f};
+  ASSERT_OK_AND_ASSIGN(
+      auto prompt_conditioning_signals,
+      BuildPromptConditioningSignals(cached_text_embeddings, /*feature_dim=*/2));
+
+  ASSERT_OK_AND_ASSIGN(
+      auto decision,
+      BuildVisionTokenPruningDecision(vision_data, /*target_tokens=*/1,
+                                      &prompt_conditioning_signals, config));
+  EXPECT_THAT(decision.token_indices, ElementsAre(2));
+}
+
+TEST(ExecutorDataUtilTest,
+     BuildPromptConditionedTokenSelectionAppliesSlightDiversityPenalty) {
+  ExecutorVisionData vision_data;
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto embeddings,
+      CopyToTensorBuffer<float>({1.0, 0.0, 0.98, 0.02, 0.0, 1.0, 0.6, 0.8},
+                                {1, 1, 4, 2}));
+  vision_data.SetEmbeddings(std::move(embeddings));
+
+  VisionTokenPruningConfig config;
+  config.strategy = VisionTokenPruningStrategy::kPromptConditionedV1;
+  config.prompt_similarity_weight = 1.0f;
+  config.salience_weight = 0.0f;
+  config.redundancy_penalty_weight = 0.5f;
+  PromptConditioningSignals prompt_conditioning_signals{
+      .pooled_prompt_features = {1.0f, 0.0f},
+      .normalized_prompt_token_features = {1.0f, 0.0f},
+      .prompt_token_count = 1,
+      .feature_dim = 2,
+  };
+
+  ASSERT_OK_AND_ASSIGN(
+      auto decision,
+      BuildVisionTokenPruningDecision(
+          vision_data, /*target_tokens=*/2, &prompt_conditioning_signals,
+          config));
+  EXPECT_THAT(decision.token_indices, ElementsAre(0, 2));
+}
+
+TEST(ExecutorDataUtilTest,
+     BuildPromptConditionedTokenSelectionRejectsMissingPromptFeatures) {
+  ExecutorVisionData vision_data;
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto embeddings,
+      CopyToTensorBuffer<float>({1.0, 0.0, 0.9, 0.1, 0.0, 1.0, 0.6, 0.8},
+                                {1, 1, 4, 2}));
+  vision_data.SetEmbeddings(std::move(embeddings));
+
+  VisionTokenPruningConfig config;
+  config.strategy = VisionTokenPruningStrategy::kPromptConditionedV1;
+
+  EXPECT_THAT(BuildVisionTokenPruningDecision(
+                  vision_data, /*target_tokens=*/2,
+                  /*prompt_conditioning_signals=*/nullptr, config),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       "prompt_conditioning_signals must be provided when using "
+                       "prompt_conditioned_v1 pruning."));
+}
+
 TEST(ExecutorDataUtilTest, CombineExecutorVisionDataTest) {
   struct alignas(::litert::kHostMemoryBufferAlignment) {
     float d[24] = {1.0f,  2.0f,  3.0f,  4.0f,  5.0f,  6.0f,  7.0f,  8.0f,

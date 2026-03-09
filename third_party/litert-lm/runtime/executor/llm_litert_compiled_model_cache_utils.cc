@@ -16,11 +16,14 @@
 
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <utility>
 
 #include "absl/container/flat_hash_map.h"  // from @com_google_absl
+#include "absl/log/absl_log.h"  // from @com_google_absl
 #include "absl/status/status.h"  // from @com_google_absl
 #include "absl/strings/match.h"  // from @com_google_absl
+#include "absl/strings/str_cat.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "absl/types/span.h"  // from @com_google_absl
 #include "litert/cc/litert_element_type.h"  // from @litert
@@ -35,6 +38,148 @@ namespace litert::lm {
 
 using ::litert::Expected;
 using ::litert::TensorBuffer;
+
+namespace {
+
+constexpr absl::string_view kKvSliceKRoot = "kv_slice_k_";
+constexpr absl::string_view kKvSliceVRoot = "kv_slice_v_";
+constexpr absl::string_view kKvCacheKRoot = "kv_cache_k_";
+constexpr absl::string_view kKvCacheVRoot = "kv_cache_v_";
+
+bool IsKnownUnusedTypeMismatchedKvCache(absl::string_view cache_name) {
+  return cache_name == "kv_cache_k_23" || cache_name == "kv_cache_v_23" ||
+         cache_name == "kv_cache_k_25" || cache_name == "kv_cache_v_25";
+}
+
+Expected<int> GetKvCacheUpdateStartPosition(const TensorBuffer& input_pos) {
+  LITERT_ASSIGN_OR_RETURN(auto positions, CopyFromTensorBuffer<int32_t>(input_pos));
+  if (positions.empty()) {
+    return ::litert::Unexpected(kLiteRtStatusErrorInvalidArgument,
+                                "input_pos must contain at least one value.");
+  }
+  if (positions.front() < 0) {
+    return ::litert::Unexpected(kLiteRtStatusErrorInvalidArgument,
+                                "input_pos must be non-negative.");
+  }
+  return positions.front();
+}
+
+Expected<std::pair<std::string, int>> MapKvSliceToCacheName(
+    absl::string_view slice_name) {
+  if (absl::StartsWith(slice_name, kKvSliceKRoot)) {
+    return std::make_pair(
+        absl::StrCat(kKvCacheKRoot, slice_name.substr(kKvSliceKRoot.size())),
+        /*axis=*/2);
+  }
+  if (absl::StartsWith(slice_name, kKvSliceVRoot)) {
+    return std::make_pair(
+        absl::StrCat(kKvCacheVRoot, slice_name.substr(kKvSliceVRoot.size())),
+        /*axis=*/3);
+  }
+  return ::litert::Unexpected(kLiteRtStatusErrorInvalidArgument,
+                              absl::StrCat("Unsupported KV slice tensor: ",
+                                           slice_name));
+}
+
+Expected<void> CopyKvCacheSlice(TensorBuffer& dst_buffer,
+                                const TensorBuffer& src_buffer,
+                                int start_position, int axis,
+                                absl::string_view cache_name) {
+  LITERT_ASSIGN_OR_RETURN(auto dst_type, dst_buffer.TensorType());
+  LITERT_ASSIGN_OR_RETURN(auto src_type, src_buffer.TensorType());
+  if (dst_type.ElementType() != src_type.ElementType()) {
+    if (IsKnownUnusedTypeMismatchedKvCache(cache_name)) {
+      ABSL_LOG(INFO)
+          << "Skipping KV cache update for known unused tensor '"
+          << cache_name
+          << "' because the slice and cache buffer element types differ.";
+      return {};
+    }
+    return ::litert::Unexpected(
+        kLiteRtStatusErrorInvalidArgument,
+        absl::StrCat("KV cache element type mismatch for '", cache_name,
+                     "'."));
+  }
+
+  const auto dst_shape = dst_type.Layout().Dimensions();
+  const auto src_shape = src_type.Layout().Dimensions();
+  if (dst_shape.size() != src_shape.size()) {
+    return ::litert::Unexpected(
+        kLiteRtStatusErrorInvalidArgument,
+        absl::StrCat("KV cache rank mismatch for '", cache_name, "'."));
+  }
+  if (axis < 0 || axis >= src_shape.size()) {
+    return ::litert::Unexpected(
+        kLiteRtStatusErrorInvalidArgument,
+        absl::StrCat("Invalid KV cache axis for '", cache_name, "'."));
+  }
+  for (int i = 0; i < src_shape.size(); ++i) {
+    if (i == axis) {
+      continue;
+    }
+    if (dst_shape[i] != src_shape[i]) {
+      return ::litert::Unexpected(
+          kLiteRtStatusErrorInvalidArgument,
+          absl::StrCat("KV cache shape mismatch for '", cache_name,
+                       "' outside update axis."));
+    }
+  }
+  if (start_position + src_shape[axis] > dst_shape[axis]) {
+    return ::litert::Unexpected(
+        kLiteRtStatusErrorInvalidArgument,
+        absl::StrCat("KV cache update for '", cache_name, "' is out of range."));
+  }
+
+  LITERT_ASSIGN_OR_RETURN(auto src_num_elements, src_type.Layout().NumElements());
+  if (src_num_elements == 0) {
+    return ::litert::Unexpected(
+        kLiteRtStatusErrorInvalidArgument,
+        absl::StrCat("KV cache slice for '", cache_name, "' is empty."));
+  }
+  LITERT_ASSIGN_OR_RETURN(auto src_bytes, src_type.Bytes());
+  const size_t element_size = src_bytes / src_num_elements;
+
+  int64_t inner_block_size_in_elements = 1;
+  for (int i = axis + 1; i < src_shape.size(); ++i) {
+    inner_block_size_in_elements *= src_shape[i];
+  }
+  int64_t outer_block_count = 1;
+  for (int i = 0; i < axis; ++i) {
+    outer_block_count *= src_shape[i];
+  }
+  const int64_t src_outer_stride_in_elements =
+      src_shape[axis] * inner_block_size_in_elements;
+  const int64_t dst_outer_stride_in_elements =
+      dst_shape[axis] * inner_block_size_in_elements;
+  const size_t copy_size_in_bytes =
+      src_shape[axis] * inner_block_size_in_elements * element_size;
+
+  LITERT_ASSIGN_OR_RETURN(
+      auto src_lock,
+      ::litert::TensorBufferScopedLock::Create(
+          *const_cast<TensorBuffer*>(&src_buffer),
+          TensorBuffer::LockMode::kRead));
+  LITERT_ASSIGN_OR_RETURN(
+      auto dst_lock,
+      ::litert::TensorBufferScopedLock::Create(dst_buffer,
+                                               TensorBuffer::LockMode::kWrite));
+  const auto* src_data = static_cast<const uint8_t*>(src_lock.second);
+  auto* dst_data = static_cast<uint8_t*>(dst_lock.second);
+
+  for (int64_t i = 0; i < outer_block_count; ++i) {
+    const auto* src_outer_block_start =
+        src_data + i * src_outer_stride_in_elements * element_size;
+    auto* dst_outer_block_start =
+        dst_data + (i * dst_outer_stride_in_elements +
+                    start_position * inner_block_size_in_elements) *
+                       element_size;
+    std::memcpy(dst_outer_block_start, src_outer_block_start,
+                copy_size_in_bytes);
+  }
+  return {};
+}
+
+}  // namespace
 
 ::litert::Expected<bool> ShouldDeleteKVCacheTokens(int current_step,
                                                    int start_position,
@@ -56,6 +201,51 @@ using ::litert::TensorBuffer;
     return true;
   }
   return false;
+}
+
+::litert::Expected<void> UpdateKvCacheFromSlices(
+    absl::flat_hash_map<absl::string_view, ::litert::TensorBuffer>*
+        input_kv_cache_buffers,
+    const absl::flat_hash_map<absl::string_view, ::litert::TensorBuffer>&
+        kv_cache_slice_buffers,
+    const ::litert::TensorBuffer& input_pos) {
+  if (input_kv_cache_buffers == nullptr) {
+    return ::litert::Unexpected(kLiteRtStatusErrorInvalidArgument,
+                                "input_kv_cache_buffers must not be null.");
+  }
+  LITERT_ASSIGN_OR_RETURN(const int start_position,
+                          GetKvCacheUpdateStartPosition(input_pos));
+
+  bool updated_any_buffer = false;
+  for (const auto& [slice_name, slice_buffer] : kv_cache_slice_buffers) {
+    if (!absl::StartsWith(slice_name, kKvSliceKRoot) &&
+        !absl::StartsWith(slice_name, kKvSliceVRoot)) {
+      continue;
+    }
+
+    LITERT_ASSIGN_OR_RETURN(auto cache_name_and_axis,
+                            MapKvSliceToCacheName(slice_name));
+    const std::string& cache_name = cache_name_and_axis.first;
+    const int axis = cache_name_and_axis.second;
+    auto cache_it =
+        input_kv_cache_buffers->find(absl::string_view(cache_name));
+    if (cache_it == input_kv_cache_buffers->end()) {
+      return ::litert::Unexpected(
+          kLiteRtStatusErrorInvalidArgument,
+          absl::StrCat("Missing KV cache tensor '", cache_name,
+                       "' for slice '", slice_name, "'."));
+    }
+
+    LITERT_RETURN_IF_ERROR(CopyKvCacheSlice(cache_it->second, slice_buffer,
+                                            start_position, axis, cache_name));
+    updated_any_buffer = true;
+  }
+
+  if (!updated_any_buffer) {
+    return ::litert::Unexpected(kLiteRtStatusErrorInvalidArgument,
+                                "No KV cache slice tensors were provided.");
+  }
+  return {};
 }
 
 // Function to dump the ring buffer.

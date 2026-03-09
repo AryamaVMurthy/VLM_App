@@ -54,11 +54,14 @@
 #include "runtime/components/embedding_lookup/embedding_lookup_manager.h"
 #include "runtime/components/model_resources.h"
 #include "runtime/executor/litert_compiled_model_executor_utils.h"
+#include "runtime/executor/llm_litert_compiled_model_cache_utils.h"
 #include "runtime/executor/llm_executor_io_types.h"
 #include "runtime/executor/llm_executor_processed_tokens.h"
 #include "runtime/executor/llm_executor_settings.h"
+#include "runtime/executor/qualcomm_npu_options.h"
 #include "runtime/util/convert_tensor_buffer.h"
 #include "runtime/util/status_macros.h"  // NOLINT
+#include "tflite/types/half.h"  // from @litert
 
 namespace litert::lm {
 
@@ -137,6 +140,18 @@ struct LlmSignatures {
   static constexpr absl::string_view kDecodeLogitsOutput = "logits";
 };
 
+absl::Status CopyCachedTokenEmbeddingToVector(
+    const ExecutorTextData::CachedTextEmbeddings& cached_text_embeddings,
+    size_t cached_text_token_index, std::vector<float>& output_vector) {
+  RETURN_IF_ERROR(cached_text_embeddings.Validate());
+  ASSIGN_OR_RETURN(
+      auto token_embedding,
+      cached_text_embeddings.GetTokenEmbedding(
+          static_cast<int>(cached_text_token_index)));
+  output_vector.assign(token_embedding.begin(), token_embedding.end());
+  return absl::OkStatus();
+}
+
 // Signature names for the cache update signatures.
 struct CacheUpdateSignatures {
   static constexpr absl::string_view kPrefillCacheUpdate =
@@ -184,36 +199,67 @@ absl::Status Fill(TensorBuffer& tensor_buffer, uint16_t value) {
   return absl::OkStatus();
 }
 
-// Applies greedy sampling to the decoded logits. TODO(b/416702864) this logic
-// should be replaced by the LiteRT-LM sampler once it supports greedy sampling
-// for quantized tensors.
-absl::StatusOr<int> ApplyGreedySampling(const TensorBuffer& decoded_logits) {
+template <typename T>
+int ArgmaxIndex(absl::Span<const T> values) {
   int max_index = 0;
-  LITERT_ASSIGN_OR_RETURN(RankedTensorType logits_tensor_type,
-                          decoded_logits.TensorType());
-  if (logits_tensor_type.ElementType() == ::litert::ElementType::Float32) {
-    LITERT_ASSIGN_OR_RETURN(auto logits_buffer_float,
-                            CopyFromTensorBuffer<float>(decoded_logits));
-
-    float max_value = std::numeric_limits<float>::min();
-    for (int i = 0; i < logits_buffer_float.size(); ++i) {
-      if (logits_buffer_float[i] > max_value) {
-        max_value = logits_buffer_float[i];
-        max_index = i;
-      }
-    }
-  } else {
-    LITERT_ASSIGN_OR_RETURN(auto logits_buffer_int16,
-                            CopyFromTensorBuffer<int16_t>(decoded_logits));
-    int16_t max_value = std::numeric_limits<int16_t>::min();
-    for (int i = 0; i < logits_buffer_int16.size(); ++i) {
-      if (logits_buffer_int16[i] > max_value) {
-        max_value = logits_buffer_int16[i];
-        max_index = i;
-      }
+  float max_value = -std::numeric_limits<float>::infinity();
+  for (int i = 0; i < values.size(); ++i) {
+    const float value = static_cast<float>(values[i]);
+    if (value > max_value) {
+      max_value = value;
+      max_index = i;
     }
   }
   return max_index;
+}
+
+// Applies greedy sampling to the decoded logits. TODO(b/416702864) this logic
+// should be replaced by the LiteRT-LM sampler once it supports greedy sampling
+// for quantized tensors.
+absl::StatusOr<int> ApplyGreedySampling(
+    const TensorBuffer& decoded_logits,
+    ConstrainedDecoder* absl_nullable constraint_decoder = nullptr) {
+  LITERT_ASSIGN_OR_RETURN(RankedTensorType logits_tensor_type,
+                          decoded_logits.TensorType());
+  const auto logits_dims = logits_tensor_type.Layout().Dimensions();
+  switch (logits_tensor_type.ElementType()) {
+    case ::litert::ElementType::Float32: {
+      LITERT_ASSIGN_OR_RETURN(auto logits_buffer_float,
+                              CopyFromTensorBuffer<float>(decoded_logits));
+      if (constraint_decoder != nullptr) {
+        RETURN_IF_ERROR(constraint_decoder->MaskLogits(
+            absl::MakeSpan(logits_buffer_float), logits_dims));
+      }
+      return ArgmaxIndex(absl::MakeConstSpan(logits_buffer_float));
+    }
+    case ::litert::ElementType::Float16: {
+      LITERT_ASSIGN_OR_RETURN(
+          auto logits_buffer_half,
+          CopyFromTensorBuffer<tflite::half>(decoded_logits));
+      if (constraint_decoder != nullptr) {
+        RETURN_IF_ERROR(constraint_decoder->MaskLogits(
+            absl::MakeSpan(logits_buffer_half), logits_dims));
+      }
+      return ArgmaxIndex(absl::MakeConstSpan(logits_buffer_half));
+    }
+    case ::litert::ElementType::Int16: {
+      LITERT_ASSIGN_OR_RETURN(auto logits_buffer_int16,
+                              CopyFromTensorBuffer<int16_t>(decoded_logits));
+      if (constraint_decoder != nullptr) {
+        std::vector<float> constrained_logits(logits_buffer_int16.begin(),
+                                              logits_buffer_int16.end());
+        RETURN_IF_ERROR(constraint_decoder->MaskLogits(
+            absl::MakeSpan(constrained_logits), logits_dims));
+        return ArgmaxIndex(absl::MakeConstSpan(constrained_logits));
+      }
+      return ArgmaxIndex(absl::MakeConstSpan(logits_buffer_int16));
+    }
+    default:
+      return absl::InvalidArgumentError(
+          absl::StrCat("Unsupported decode logits element type for greedy "
+                       "sampling: ",
+                       logits_tensor_type.ElementType()));
+  }
 }
 
 // Returns true if the transformer model has a per layer embedder input buffer.
@@ -403,6 +449,27 @@ std::vector<std::string> BufferNamesForDebug(
   return names;
 }
 
+template <typename SignatureOwner>
+absl::StatusOr<std::string> DescribeSignatures(
+    const SignatureOwner& signature_owner) {
+  LITERT_ASSIGN_OR_RETURN(auto signature_keys,
+                          signature_owner.GetSignatureKeys());
+  std::vector<std::string> signature_descriptions;
+  signature_descriptions.reserve(signature_keys.size());
+  for (const auto& signature_key : signature_keys) {
+    LITERT_ASSIGN_OR_RETURN(auto input_names,
+                            signature_owner.GetSignatureInputNames(
+                                signature_key));
+    LITERT_ASSIGN_OR_RETURN(auto output_names,
+                            signature_owner.GetSignatureOutputNames(
+                                signature_key));
+    signature_descriptions.emplace_back(absl::StrCat(
+        signature_key, "{inputs=[", absl::StrJoin(input_names, ", "),
+        "], outputs=[", absl::StrJoin(output_names, ", "), "]}"));
+  }
+  return absl::StrJoin(signature_descriptions, "; ");
+}
+
 absl::StatusOr<std::vector<absl::string_view>> ResolveSharedOutputNames(
     CompiledModel& auxiliary_compiled_model, absl::string_view signature_name,
     const absl::flat_hash_map<absl::string_view, TensorBuffer>&
@@ -450,9 +517,11 @@ LlmLiteRtNpuCompiledModelExecutor::CreateEmbedderContextWithBufferSharing(
         gemma_prefill_input_buffers,
     absl::flat_hash_map<absl::string_view, ::litert::TensorBuffer>&
         gemma_decode_input_buffers) {
+  LITERT_ASSIGN_OR_RETURN(auto embedder_options,
+                          CreateDefaultQualcommNpuLiteRtOptions());
   LITERT_ASSIGN_OR_RETURN(CompiledModel embedder_compiled_model,
                           CompiledModel::Create(env, embedder_model.Get(),
-                                                litert::HwAccelerators::kCpu));
+                                                embedder_options));
 
   absl::flat_hash_map<absl::string_view, ::litert::TensorBuffer>
       prefill_input_buffers;
@@ -496,9 +565,11 @@ LlmLiteRtNpuCompiledModelExecutor::
             gemma_prefill_input_buffers,
         absl::flat_hash_map<absl::string_view, ::litert::TensorBuffer>&
             gemma_decode_input_buffers) {
+  LITERT_ASSIGN_OR_RETURN(auto embedder_options,
+                          CreateDefaultQualcommNpuLiteRtOptions());
   LITERT_ASSIGN_OR_RETURN(CompiledModel embedder_compiled_model,
                           CompiledModel::Create(env, embedder_model.Get(),
-                                                litert::HwAccelerators::kCpu));
+                                                embedder_options));
 
   absl::flat_hash_map<absl::string_view, ::litert::TensorBuffer>
       prefill_input_buffers;
@@ -535,11 +606,33 @@ LlmLiteRtNpuCompiledModelExecutor::
 absl::StatusOr<LlmLiteRtNpuCompiledModelExecutor::NpuAuxiliaryContext>
 LlmLiteRtNpuCompiledModelExecutor::CreateNpuAuxiliaryContext(
     ::litert::Environment& env, const litert::Model& npu_auxiliary_model) {
-  LITERT_ASSIGN_OR_RETURN(auto npu_auxiliary_compiled_model,
-                          CompiledModel::Create(env, npu_auxiliary_model.Get(),
-                                                litert::HwAccelerators::kCpu));
+  LITERT_ASSIGN_OR_RETURN(auto signature_description,
+                          DescribeSignatures(npu_auxiliary_model));
+  ABSL_LOG(INFO) << "Creating TF_LITE_AUX compiled model for NPU. signatures=["
+                 << signature_description
+                 << "] num_signatures="
+                 << npu_auxiliary_model.GetNumSignatures();
+
+  LITERT_ASSIGN_OR_RETURN(auto npu_auxiliary_options,
+                          CreateDefaultQualcommNpuLiteRtOptions());
+  ABSL_LOG(INFO) << "TF_LITE_AUX accelerator=npu, qualcomm_log_level=info, "
+                    "htp_performance_mode=burst";
+
+  auto npu_auxiliary_compiled_model = CompiledModel::Create(
+      env, npu_auxiliary_model.Get(), npu_auxiliary_options);
+  if (!npu_auxiliary_compiled_model.HasValue()) {
+    return litert::ErrorStatusBuilder(npu_auxiliary_compiled_model.Error())
+           << "Failed to create TF_LITE_AUX compiled model for NPU. "
+           << "signatures=[" << signature_description << "]";
+  }
+  LITERT_ASSIGN_OR_RETURN(
+      auto compiled_signature_description,
+      DescribeSignatures(*npu_auxiliary_compiled_model));
+  ABSL_LOG(INFO) << "Created TF_LITE_AUX compiled model for NPU. signatures=["
+                 << compiled_signature_description << "]";
+
   NpuAuxiliaryContext npu_auxiliary_context(
-      std::move(npu_auxiliary_compiled_model));
+      std::move(*npu_auxiliary_compiled_model));
   return npu_auxiliary_context;
 }
 
@@ -894,7 +987,7 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::WarmupInference(
     ::litert::CompiledModel& compiled_model_auxiliary,
     const InferenceContext& rope_inference_context,
     const InferenceContext& mask_inference_context,
-    const InferenceContext& cache_update_inference_context) {
+    InferenceContext& cache_update_inference_context) {
   // We need to fill the embedding input buffers with non-zero values because
   // some of the Gemma3 models contain embedding lookup preprocessing that
   // quantize a float embedding tensor into a quantized embedding tensor and use
@@ -955,20 +1048,21 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::WarmupInference(
       << "Inference warmup run for mask signature (decode) failed."
       << result.Error().Message();
 
-  result = compiled_model_auxiliary.Run(
-      CacheUpdateSignatures::kPrefillCacheUpdate,
-      cache_update_inference_context.prefill_input_buffers,
-      cache_update_inference_context.prefill_output_buffers);
-  RET_CHECK(result)
-      << "Inference warmup run for cache update signature (prefill) failed."
-      << result.Error().Message();
-  result = compiled_model_auxiliary.Run(
-      CacheUpdateSignatures::kDecodeCacheUpdate,
-      cache_update_inference_context.decode_input_buffers,
-      cache_update_inference_context.decode_output_buffers);
-  RET_CHECK(result)
-      << "Inference warmup run for cache update signature (decode) failed."
-      << result.Error().Message();
+  auto cache_update_result = UpdateKvCacheFromSlices(
+      &cache_update_inference_context.prefill_output_buffers,
+      llm_inference_context.prefill_output_buffers,
+      cache_update_inference_context
+          .prefill_input_buffers.at(CacheUpdateSignatures::kInputPos));
+  RET_CHECK(cache_update_result)
+      << "Warmup KV cache update (prefill) failed."
+      << cache_update_result.Error().Message();
+  cache_update_result = UpdateKvCacheFromSlices(
+      &cache_update_inference_context.decode_output_buffers,
+      llm_inference_context.decode_output_buffers,
+      cache_update_inference_context
+          .decode_input_buffers.at(CacheUpdateSignatures::kInputPos));
+  RET_CHECK(cache_update_result) << "Warmup KV cache update (decode) failed."
+                                 << cache_update_result.Error().Message();
 
   // Clear the KV cache buffers after warmup.
   RETURN_IF_ERROR(ClearKVCache(llm_inference_context.prefill_input_buffers));
@@ -1018,6 +1112,18 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::Prefill(
     RETURN_IF_ERROR(
         embedding_lookup_manager_.value()->UpdateMultiModalEmbeddings(inputs));
   }
+  auto cached_text_embeddings_status = inputs.GetCachedTextEmbeddingsPtr();
+  if (cached_text_embeddings_status.ok()) {
+    current_prefill_cached_text_embeddings_ =
+        cached_text_embeddings_status.value();
+    current_prefill_cached_text_token_offset_ = 0;
+    ABSL_LOG(INFO) << "Reusing "
+                   << current_prefill_cached_text_embeddings_->token_count
+                   << " cached prompt text embeddings during NPU prefill.";
+  } else {
+    current_prefill_cached_text_embeddings_ = nullptr;
+    current_prefill_cached_text_token_offset_ = 0;
+  }
   LITERT_ASSIGN_OR_RETURN(auto ids, ReferTensorBufferAsSpan<int32_t>(
                                         *(*inputs.GetTextTokenIdsPtr())));
 
@@ -1036,6 +1142,16 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::Prefill(
     RETURN_IF_ERROR(
         embedding_lookup_manager_.value()->CleanupMultiModalEmbeddings());
   }
+  if (current_prefill_cached_text_embeddings_ != nullptr) {
+    RET_CHECK_EQ(current_prefill_cached_text_token_offset_,
+                 current_prefill_cached_text_embeddings_->token_count)
+        << "Cached text embedding count mismatch during NPU prefill reuse.";
+    ABSL_LOG(INFO) << "Consumed "
+                   << current_prefill_cached_text_token_offset_
+                   << " cached prompt text embeddings during NPU prefill.";
+  }
+  current_prefill_cached_text_embeddings_ = nullptr;
+  current_prefill_cached_text_token_offset_ = 0;
   auto end = absl::Now();
   latency_stats_.prefill_e2e_latency_us +=
       absl::ToInt64Microseconds(end - start);
@@ -1050,10 +1166,6 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::Decode(
 
 absl::Status LlmLiteRtNpuCompiledModelExecutor::Decode(
     TensorBuffer& output_tokens, const ExecutorDecodeParams& decode_params) {
-  if (decode_params.HasConstraintDecoder()) {
-    return absl::UnimplementedError(
-        "Constrained decoding is not supported on NPU.");
-  }
   auto start = absl::Now();
   ::litert::TensorBuffer& decoded_logits =
       llm_inference_context_
@@ -1070,11 +1182,27 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::Decode(
   if (pending_input_token.empty()) {
     return absl::InvalidArgumentError("No id available to be decoded.");
   }
+  if (decode_params.HasConstraintDecoder() && !sampled_ids_.empty()) {
+    std::vector<int> current_token_ids;
+    current_token_ids.reserve(pending_input_token.size());
+    for (const auto& token : pending_input_token) {
+      current_token_ids.push_back(token->id());
+    }
+    RETURN_IF_ERROR(
+        decode_params.GetConstraintDecoder()->UpdateConstraintState(
+            absl::MakeSpan(current_token_ids)));
+  }
   RETURN_IF_ERROR(DecodeInternal(internal_start_step, pending_input_token[0]));
   RETURN_IF_ERROR(processed_tokens_.MarkPendingInputTokenAsProcessed());
 
   auto start_sample = absl::Now();
-  ASSIGN_OR_RETURN(const int max_index, ApplyGreedySampling(decoded_logits));
+  ASSIGN_OR_RETURN(
+      const int max_index,
+      ApplyGreedySampling(
+          decoded_logits,
+          decode_params.HasConstraintDecoder()
+              ? decode_params.GetConstraintDecoder()
+              : nullptr));
 
   latency_stats_.decode_sampling_latency_us +=
       absl::ToInt64Microseconds(absl::Now() - start_sample);
@@ -1095,6 +1223,7 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::Decode(
 
   RETURN_IF_ERROR(
       processed_tokens_.AddPendingInputToken({std::move(last_output_token)}));
+  sampled_ids_.push_back(max_index);
   ++current_step_;
 
   output_tokens.Write(absl::MakeConstSpan({max_index}));
@@ -1212,9 +1341,19 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::PrefillInternal(
       litert::TensorBuffer& embedding_buffer =
           llm_inference_context_
               .prefill_input_buffers[LlmSignatures::kInputEmbeddings];
-      RETURN_IF_ERROR(embedding_lookup_manager_.value()->LookupPrefill(
-          processed_input_tokens, &embedding_buffer,
-          pending_input_token.empty() ? 0 : 1));
+      if (current_prefill_cached_text_embeddings_ != nullptr) {
+        RETURN_IF_ERROR(embedding_lookup_manager_.value()
+                            ->LookupPrefillWithCachedTextEmbeddings(
+                                processed_input_tokens,
+                                *current_prefill_cached_text_embeddings_,
+                                &current_prefill_cached_text_token_offset_,
+                                &embedding_buffer,
+                                pending_input_token.empty() ? 0 : 1));
+      } else {
+        RETURN_IF_ERROR(embedding_lookup_manager_.value()->LookupPrefill(
+            processed_input_tokens, &embedding_buffer,
+            pending_input_token.empty() ? 0 : 1));
+      }
       latency_stats_.prefill_embedder_inference_latency_us +=
           absl::ToInt64Microseconds(absl::Now() - start);
     }
@@ -1230,8 +1369,17 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::PrefillInternal(
     // Look up the embeddings for the last token so they can be used in the next
     // prefill or decode. This has to be done now in the case of multi-modal
     // prefill so the embeddings are used in the correct order.
-    RETURN_IF_ERROR(embedding_lookup_manager_.value()->LookupPrefill(
-        last_input_token->id(), last_input_token->mutable_embedding()));
+    if (current_prefill_cached_text_embeddings_ != nullptr &&
+        last_input_token->id() >= 0) {
+      RETURN_IF_ERROR(CopyCachedTokenEmbeddingToVector(
+          *current_prefill_cached_text_embeddings_,
+          current_prefill_cached_text_token_offset_,
+          last_input_token->mutable_embedding()));
+      ++current_prefill_cached_text_token_offset_;
+    } else {
+      RETURN_IF_ERROR(embedding_lookup_manager_.value()->LookupPrefill(
+          last_input_token->id(), last_input_token->mutable_embedding()));
+    }
     latency_stats_.prefill_embedder_inference_latency_us +=
         absl::ToInt64Microseconds(absl::Now() - start);
   }
@@ -1311,14 +1459,15 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::PrefillInternal(
   // Cache update.
   {
     auto start = absl::Now();
-    auto res = npu_auxiliary_context_.npu_auxiliary_compiled_model.Run(
-        CacheUpdateSignatures::kPrefillCacheUpdate,
-        cache_update_inference_context_.prefill_input_buffers,
-        cache_update_inference_context_.prefill_output_buffers);
+    auto res = UpdateKvCacheFromSlices(
+        &cache_update_inference_context_.prefill_output_buffers,
+        llm_inference_context_.prefill_output_buffers,
+        cache_update_inference_context_
+            .prefill_input_buffers[CacheUpdateSignatures::kInputPos]);
     auto end = absl::Now();
     latency_stats_.prefill_cache_update_inference_latency_us +=
         absl::ToInt64Microseconds(end - start);
-    RET_CHECK(res) << "Failed to run cache update model."
+    RET_CHECK(res) << "Failed to update KV cache."
                    << res.Error().Message();
   }
   return absl::OkStatus();
@@ -1461,11 +1610,12 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::DecodeInternal(
   // Cache update.
   {
     auto start = absl::Now();
-    auto res = npu_auxiliary_context_.npu_auxiliary_compiled_model.Run(
-        CacheUpdateSignatures::kDecodeCacheUpdate,
-        cache_update_inference_context_.decode_input_buffers,
-        cache_update_inference_context_.decode_output_buffers);
-    RET_CHECK(res) << "Failed to run cache update model."
+    auto res = UpdateKvCacheFromSlices(
+        &cache_update_inference_context_.decode_output_buffers,
+        llm_inference_context_.decode_output_buffers,
+        cache_update_inference_context_
+            .decode_input_buffers[CacheUpdateSignatures::kInputPos]);
+    RET_CHECK(res) << "Failed to update KV cache."
                    << res.Error().Message();
     auto end = absl::Now();
     latency_stats_.decode_cache_update_inference_latency_us +=
@@ -1523,15 +1673,7 @@ LlmLiteRtNpuCompiledModelExecutor::Create(
 
 // Creates LiteRT options for NPU accelerator.
 litert::Expected<litert::Options> CreateLiteRtOptions() {
-  LITERT_ASSIGN_OR_RETURN(auto options, ::litert::Options::Create());
-  options.SetHardwareAccelerators(litert::HwAccelerators::kCpu);
-  LITERT_ASSIGN_OR_RETURN(auto qnn_opts,
-                          ::litert::qualcomm::QualcommOptions::Create());
-  qnn_opts.SetLogLevel(::litert::qualcomm::QualcommOptions::LogLevel::kInfo);
-  qnn_opts.SetHtpPerformanceMode(
-      ::litert::qualcomm::QualcommOptions::HtpPerformanceMode::kDefault);
-  options.AddOpaqueOptions(std::move(qnn_opts));
-  return options;
+  return CreateDefaultQualcommNpuLiteRtOptions();
 }
 
 absl::StatusOr<std::unique_ptr<LlmLiteRtNpuCompiledModelExecutor>>
@@ -1632,6 +1774,8 @@ LlmLiteRtNpuCompiledModelExecutor::CreateForModelHasPerLayerEmbedding(
           input_kv_cache_buffers, prefill_output_kv_cache_slice_buffers,
           decode_output_kv_cache_slice_buffers, std::move(prefill_input_pos),
           std::move(decode_input_pos)));
+  ABSL_LOG(INFO) << "Using host-side KV cache updates; TF_LITE_AUX only "
+                    "needs mask and RoPE signatures.";
 
   RETURN_IF_ERROR(WarmupInference(
       llm_compiled_model, llm_inference_context,
@@ -1799,6 +1943,8 @@ LlmLiteRtNpuCompiledModelExecutor::CreateForModelWithoutPerLayerEmbedding(
           input_kv_cache_buffers, prefill_output_kv_cache_slice_buffers,
           decode_output_kv_cache_slice_buffers, std::move(prefill_input_pos),
           std::move(decode_input_pos)));
+  ABSL_LOG(INFO) << "Using host-side KV cache updates; TF_LITE_AUX only "
+                    "needs mask and RoPE signatures.";
 
   RETURN_IF_ERROR(WarmupInference(
       llm_compiled_model, llm_inference_context,

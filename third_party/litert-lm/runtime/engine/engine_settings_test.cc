@@ -963,6 +963,70 @@ TEST(SessionConfigTest, SetAndGetSamplerBackend) {
   EXPECT_EQ(session_config.GetSamplerBackend(), Backend::GPU);
 }
 
+TEST(SessionConfigTest, SetAndGetMaxVisualTokens) {
+  SessionConfig session_config = SessionConfig::CreateDefault();
+  EXPECT_EQ(session_config.GetMaxVisualTokens(), 0);
+  session_config.SetMaxVisualTokens(64);
+  EXPECT_EQ(session_config.GetMaxVisualTokens(), 64);
+}
+
+TEST(SessionConfigTest, SetAndGetVisualTokenPruningStrategy) {
+  SessionConfig session_config = SessionConfig::CreateDefault();
+  EXPECT_EQ(session_config.GetVisualTokenPruningStrategy(), "uniform");
+  session_config.SetVisualTokenPruningStrategy("prompt_conditioned_v1");
+  EXPECT_EQ(session_config.GetVisualTokenPruningStrategy(),
+            "prompt_conditioned_v1");
+}
+
+TEST(SessionConfigTest, MaybeUpdateAndValidateRejectsNegativeMaxVisualTokens) {
+  auto model_assets = ModelAssets::Create("test_model_path_1");
+  ASSERT_OK(model_assets);
+  auto settings = EngineSettings::CreateDefault(*model_assets);
+  ASSERT_OK(settings);
+
+  MockTokenizer tokenizer;
+  EXPECT_CALL(tokenizer, TokenIdsToText).WillRepeatedly(Return("fake_text"));
+  EXPECT_CALL(tokenizer, TokenToId).WillRepeatedly(Return(1));
+  EXPECT_CALL(tokenizer, TextToTokenIds)
+      .WillRepeatedly(Return(std::vector<int>{1}));
+  proto::LlmMetadata llm_metadata = CreateLlmMetadata();
+  EXPECT_OK(settings->MaybeUpdateAndValidate(tokenizer, &llm_metadata));
+
+  SessionConfig session_config = SessionConfig::CreateDefault();
+  session_config.SetMaxVisualTokens(-1);
+  EXPECT_THAT(
+      session_config.MaybeUpdateAndValidate(*settings),
+      testing::status::StatusIs(
+          absl::StatusCode::kInvalidArgument,
+          "MaxVisualTokens must be non-negative, but got: -1"));
+}
+
+TEST(SessionConfigTest,
+     MaybeUpdateAndValidateRejectsInvalidVisualTokenPruningStrategy) {
+  auto model_assets = ModelAssets::Create("test_model_path_1");
+  ASSERT_OK(model_assets);
+  auto settings = EngineSettings::CreateDefault(*model_assets);
+  ASSERT_OK(settings);
+
+  MockTokenizer tokenizer;
+  EXPECT_CALL(tokenizer, TokenIdsToText).WillRepeatedly(Return("fake_text"));
+  EXPECT_CALL(tokenizer, TokenToId).WillRepeatedly(Return(1));
+  EXPECT_CALL(tokenizer, TextToTokenIds)
+      .WillRepeatedly(Return(std::vector<int>{1}));
+  proto::LlmMetadata llm_metadata = CreateLlmMetadata();
+  EXPECT_OK(settings->MaybeUpdateAndValidate(tokenizer, &llm_metadata));
+
+  SessionConfig session_config = SessionConfig::CreateDefault();
+  session_config.SetVisualTokenPruningStrategy("bad_strategy");
+  EXPECT_THAT(
+      session_config.MaybeUpdateAndValidate(*settings),
+      testing::status::StatusIs(
+          absl::StatusCode::kInvalidArgument,
+          "VisualTokenPruningStrategy is invalid: Unsupported visual token "
+          "pruning strategy: bad_strategy. Expected one of: uniform, "
+          "prompt_conditioned_v1."));
+}
+
 TEST(SessionConfigTest,
      MaybeUpdateAndValidatePromptTemplates_NoSessionTemplate) {
   auto model_assets = ModelAssets::Create("test_model_path_1");

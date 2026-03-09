@@ -20,6 +20,7 @@
 
 #include "absl/base/nullability.h"  // from @com_google_absl
 #include "absl/status/statusor.h"  // from @com_google_absl
+#include "runtime/components/model_resources.h"
 #include "runtime/components/tokenizer.h"
 #include "runtime/engine/engine.h"
 #include "runtime/engine/engine_settings.h"
@@ -40,6 +41,7 @@ namespace litert::lm {
 absl::StatusOr<std::unique_ptr<Engine::Session>> InitializeSessionBasic(
     LlmExecutor* absl_nonnull executor, Tokenizer* absl_nonnull tokenizer,
     VisionExecutor* vision_executor, AudioExecutor* audio_executor,
+    ModelResources* model_resources,
     const SessionConfig& session_config,
     std::optional<BenchmarkInfo> benchmark_info,
     ThreadPool* absl_nonnull worker_thread_pool);

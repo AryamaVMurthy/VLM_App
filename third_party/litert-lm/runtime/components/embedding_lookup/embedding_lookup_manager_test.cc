@@ -1646,8 +1646,9 @@ TEST_F(EmbeddingLookupManagerTest,
             // ignore it.
             float expected_value = 10000.0 * token + 100.0 * idx2 + idx3;
             ASSERT_NEAR(output_tensor_float_ptr[offset], expected_value, 1e-5);
-          }
-        }
+  }
+}
+
       }
     }
   }

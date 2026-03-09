@@ -52,6 +52,8 @@
 
 namespace litert::lm {
 
+class EmbeddingLookupManager;
+
 using SessionId = int;
 using TaskId = int;
 
@@ -263,9 +265,13 @@ class ExecutionManager {
   ExecutionManager(
       Tokenizer* absl_nonnull tokenizer,
       std::unique_ptr<ResourceManager> absl_nonnull resource_manager,
+      std::unique_ptr<EmbeddingLookupManager>
+          prompt_embedding_lookup_manager,
       ::litert::Environment* absl_nullable litert_env = nullptr)
       : tokenizer_(std::move(tokenizer)),
         resource_manager_(std::move(resource_manager)),
+        prompt_embedding_lookup_manager_(
+            std::move(prompt_embedding_lookup_manager)),
         litert_env_(litert_env) {
     execution_thread_pool_ =
         std::make_unique<ThreadPool>(/*name_prefix=*/"execution_thread_pool",
@@ -364,6 +370,7 @@ class ExecutionManager {
   // - benchmark_info: The benchmark info of the session.
   absl::StatusOr<ExecutorInputs> ProcessAndCombineContents(
       const std::vector<InputData>& preprocessed_contents,
+      const SessionConfig& session_config,
       std::optional<BenchmarkInfo>& benchmark_info);
 
   // The session ID.
@@ -394,6 +401,9 @@ class ExecutionManager {
 
   // The resource manager used for managing the resources.
   std::unique_ptr<ResourceManager> absl_nonnull resource_manager_;
+
+  // Optional real text embedder used to build prompt caches before pruning.
+  std::unique_ptr<EmbeddingLookupManager> prompt_embedding_lookup_manager_;
 
   // The LIRTER environment used for creating the LLM context.
   ::litert::Environment* absl_nullable litert_env_;

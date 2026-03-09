@@ -117,6 +117,23 @@ absl::Status InitializeEmbeddingLookups(
   return absl::OkStatus();
 }
 
+size_t CountNonNegativeTokens(Span<const int> token_ids) {
+  return std::count_if(token_ids.begin(), token_ids.end(),
+                       [](int token_id) { return token_id >= 0; });
+}
+
+absl::Status CopyCachedTokenEmbeddingToVector(
+    const ExecutorTextData::CachedTextEmbeddings& cached_text_embeddings,
+    size_t cached_text_token_index, std::vector<float>& output_vector) {
+  RETURN_IF_ERROR(cached_text_embeddings.Validate());
+  ASSIGN_OR_RETURN(
+      auto token_embedding,
+      cached_text_embeddings.GetTokenEmbedding(
+          static_cast<int>(cached_text_token_index)));
+  output_vector.assign(token_embedding.begin(), token_embedding.end());
+  return absl::OkStatus();
+}
+
 absl::Status CopyKvCacheBuffers(
     size_t decode_batch_size, int src_index_to_copy_on_prefill,
     const absl::flat_hash_map<absl::string_view, TensorBuffer>&
@@ -760,9 +777,18 @@ absl::Status LlmLiteRtCompiledModelExecutorBase::PrefillInternal(
       // filling is handled by the embedding lookup.
       TensorBuffer* prefill_input_embeddings_buffer =
           &(prefill_input_buffers[signatures_.input_embeddings.value()]);
-      RETURN_IF_ERROR(embedding_lookup_->LookupPrefill(
-          processed_input_tokens, prefill_input_embeddings_buffer,
-          /*offset=*/input_idx));
+      if (current_prefill_cached_text_embeddings_ != nullptr) {
+        RETURN_IF_ERROR(
+            embedding_lookup_->LookupPrefillWithCachedTextEmbeddings(
+                processed_input_tokens, *current_prefill_cached_text_embeddings_,
+                &current_prefill_cached_text_token_offset_,
+                prefill_input_embeddings_buffer,
+                /*offset=*/input_idx));
+      } else {
+        RETURN_IF_ERROR(embedding_lookup_->LookupPrefill(
+            processed_input_tokens, prefill_input_embeddings_buffer,
+            /*offset=*/input_idx));
+      }
 
       // We may have per layer embedding as well.
       if (signatures_.input_per_layer_embeddings) {
@@ -793,8 +819,17 @@ absl::Status LlmLiteRtCompiledModelExecutorBase::PrefillInternal(
       // Look up the embeddings for the last token so they can be used in the
       // next prefill or decode. This has to be done now in the case of
       // multi-modal prefill so the embeddings are used in the correct order.
-      RETURN_IF_ERROR(embedding_lookup_->LookupPrefill(
-          last_input_token->id(), last_input_token->mutable_embedding()));
+      if (current_prefill_cached_text_embeddings_ != nullptr &&
+          last_input_token->id() >= 0) {
+        RETURN_IF_ERROR(CopyCachedTokenEmbeddingToVector(
+            *current_prefill_cached_text_embeddings_,
+            current_prefill_cached_text_token_offset_,
+            last_input_token->mutable_embedding()));
+        ++current_prefill_cached_text_token_offset_;
+      } else {
+        RETURN_IF_ERROR(embedding_lookup_->LookupPrefill(
+            last_input_token->id(), last_input_token->mutable_embedding()));
+      }
       if (use_per_layer_embedding) {
         RETURN_IF_ERROR(per_layer_embedding_lookup_->LookupPrefill(
             last_input_token->id(),
@@ -1444,6 +1479,19 @@ absl::Status LlmLiteRtCompiledModelExecutorStatic::Prefill(
     RETURN_IF_ERROR(embedding_lookup_->UpdateMultiModalEmbeddings(inputs));
   }
 
+  auto cached_text_embeddings_status = inputs.GetCachedTextEmbeddingsPtr();
+  if (cached_text_embeddings_status.ok()) {
+    current_prefill_cached_text_embeddings_ =
+        cached_text_embeddings_status.value();
+    current_prefill_cached_text_token_offset_ = 0;
+    ABSL_LOG(INFO) << "Reusing "
+                   << current_prefill_cached_text_embeddings_->token_count
+                   << " cached prompt text embeddings during prefill.";
+  } else {
+    current_prefill_cached_text_embeddings_ = nullptr;
+    current_prefill_cached_text_token_offset_ = 0;
+  }
+
   LITERT_ASSIGN_OR_RETURN(auto ids, ReferTensorBufferAsSpan<int32_t>(
                                         *(*inputs.GetTextTokenIdsPtr())));
   // Reduce the input ids only with one user selected.
@@ -1474,6 +1522,16 @@ absl::Status LlmLiteRtCompiledModelExecutorStatic::Prefill(
   if (embedding_lookup_ != nullptr) {
     RETURN_IF_ERROR(embedding_lookup_->CleanupMultiModalEmbeddings());
   }
+  if (current_prefill_cached_text_embeddings_ != nullptr) {
+    RET_CHECK_EQ(current_prefill_cached_text_token_offset_,
+                 current_prefill_cached_text_embeddings_->token_count)
+        << "Cached text embedding count mismatch during prefill reuse.";
+    ABSL_LOG(INFO) << "Consumed "
+                   << current_prefill_cached_text_token_offset_
+                   << " cached prompt text embeddings during prefill.";
+  }
+  current_prefill_cached_text_embeddings_ = nullptr;
+  current_prefill_cached_text_token_offset_ = 0;
 
   return absl::OkStatus();
 }
@@ -1922,21 +1980,49 @@ absl::Status LlmLiteRtCompiledModelExecutorDynamic::Prefill(
   RET_CHECK_EQ(tensor_type.Layout().Dimensions()[0], 1);
   RET_CHECK_GT(tensor_type.Layout().Dimensions()[1], 0)
       << "Prefill token ids must be non-empty.";
+  if (embedding_lookup_ != nullptr) {
+    RETURN_IF_ERROR(embedding_lookup_->UpdateMultiModalEmbeddings(inputs));
+  }
+  auto cached_text_embeddings_status = inputs.GetCachedTextEmbeddingsPtr();
+  if (cached_text_embeddings_status.ok()) {
+    current_prefill_cached_text_embeddings_ =
+        cached_text_embeddings_status.value();
+    current_prefill_cached_text_token_offset_ = 0;
+    ABSL_LOG(INFO) << "Reusing "
+                   << current_prefill_cached_text_embeddings_->token_count
+                   << " cached prompt text embeddings during prefill.";
+  } else {
+    current_prefill_cached_text_embeddings_ = nullptr;
+    current_prefill_cached_text_token_offset_ = 0;
+  }
   LITERT_ASSIGN_OR_RETURN(
       absl::Span<int> ids,
       ReferTensorBufferAsSpan<int32_t>(*(*inputs.GetTextTokenIdsPtr())));
 
   if (prefill_chunk_size_ <= 0) {
-    return PrefillInternal(ids, params);
+    RETURN_IF_ERROR(PrefillInternal(ids, params));
+  } else {
+    while (!ids.empty()) {
+      int chunk_size =
+          std::min(static_cast<int>(ids.size()), prefill_chunk_size_);
+      absl::Span<int> chunk_ids = ids.first(chunk_size);
+      ids = ids.subspan(chunk_size);
+      RETURN_IF_ERROR(PrefillInternal(chunk_ids, params));
+    }
   }
-
-  while (!ids.empty()) {
-    int chunk_size =
-        std::min(static_cast<int>(ids.size()), prefill_chunk_size_);
-    absl::Span<int> chunk_ids = ids.first(chunk_size);
-    ids = ids.subspan(chunk_size);
-    RETURN_IF_ERROR(PrefillInternal(chunk_ids, params));
+  if (embedding_lookup_ != nullptr) {
+    RETURN_IF_ERROR(embedding_lookup_->CleanupMultiModalEmbeddings());
   }
+  if (current_prefill_cached_text_embeddings_ != nullptr) {
+    RET_CHECK_EQ(current_prefill_cached_text_token_offset_,
+                 current_prefill_cached_text_embeddings_->token_count)
+        << "Cached text embedding count mismatch during prefill reuse.";
+    ABSL_LOG(INFO) << "Consumed "
+                   << current_prefill_cached_text_token_offset_
+                   << " cached prompt text embeddings during prefill.";
+  }
+  current_prefill_cached_text_embeddings_ = nullptr;
+  current_prefill_cached_text_token_offset_ = 0;
   return absl::OkStatus();
 }
 

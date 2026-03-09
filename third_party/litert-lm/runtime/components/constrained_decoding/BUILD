@@ -116,6 +116,18 @@ cc_library(
     ],
 )
 
+cc_test(
+    name = "constrained_decoder_vocab_test",
+    srcs = ["constrained_decoder_vocab_test.cc"],
+    deps = [
+        ":constrained_decoder",
+        ":fake_constraint",
+        "@com_google_googletest//:gtest_main",
+        "@litert//litert/test:matchers",
+        "//runtime/util:convert_tensor_buffer",
+    ],
+)
+
 alias(
     name = "gemma_model_constraint_provider_lib",
     actual = ":gemma_model_constraint_provider_shared_lib",

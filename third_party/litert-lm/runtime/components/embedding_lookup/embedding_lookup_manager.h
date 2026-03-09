@@ -109,6 +109,23 @@ class EmbeddingLookupManager {
                              litert::TensorBuffer* output_tensor,
                              size_t token_offset);
 
+  // Populates prefill embeddings by reusing a cached text-embedding stream for
+  // non-negative text tokens and the multimodal lookup state for special
+  // negative tokens. cached_text_token_offset is advanced for every positive
+  // token consumed.
+  absl::Status LookupPrefillWithCachedTextEmbeddings(
+      absl::Span<const int> tokens,
+      const ExecutorTextData::CachedTextEmbeddings& cached_text_embeddings,
+      size_t* cached_text_token_offset, litert::TensorBuffer* output_tensor,
+      size_t token_offset);
+
+  // Same as above for a single token. Positive tokens are served from the
+  // cache, negative tokens still use the multimodal lookup state.
+  absl::Status LookupPrefillWithCachedTextEmbeddings(
+      int token,
+      const ExecutorTextData::CachedTextEmbeddings& cached_text_embeddings,
+      size_t cached_text_token_index, std::vector<float>& output_vector);
+
   EmbeddingLookupText* GetTextEmbeddingLookup() const {
     return text_embedding_lookup_.get();
   }

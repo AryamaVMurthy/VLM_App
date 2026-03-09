@@ -55,6 +55,12 @@ ABSL_FLAG(std::string, model_path, "", "Model path to use for LLM execution.");
 ABSL_FLAG(std::string, input_prompt, "",
           "Input prompt to use for testing LLM execution.");
 ABSL_FLAG(std::string, input_prompt_file, "", "File path to the input prompt.");
+ABSL_FLAG(int, max_visual_tokens, 0,
+          "Maximum number of projected visual tokens to retain after the "
+          "vision adapter. A value of 0 disables visual token pruning.");
+ABSL_FLAG(std::string, visual_token_pruning_strategy, "uniform",
+          "Visual token pruning strategy to apply after the vision adapter. "
+          "Supported values: uniform, prompt_conditioned_v1.");
 
 namespace {
 
@@ -144,6 +150,9 @@ absl::Status MainHelper(int argc, char** argv) {
   // Create the conversation.
   std::unique_ptr<Conversation> conversation;
   auto session_config = litert::lm::SessionConfig::CreateDefault();
+  session_config.SetMaxVisualTokens(absl::GetFlag(FLAGS_max_visual_tokens));
+  session_config.SetVisualTokenPruningStrategy(
+      absl::GetFlag(FLAGS_visual_token_pruning_strategy));
   ASSIGN_OR_RETURN(auto conversation_config,
                    ConversationConfig::Builder()
                        .SetSessionConfig(session_config)

@@ -40,6 +40,7 @@
 #include "runtime/proto/llm_model_type.pb.h"
 #include "runtime/proto/sampler_params.pb.h"
 #include "runtime/proto/token.pb.h"
+#include "runtime/util/executor_data_util.h"
 #include "runtime/util/model_type_utils.h"
 #include "runtime/util/scoped_file.h"
 #include "runtime/util/status_macros.h"  // IWYU pragma: keep
@@ -479,6 +480,18 @@ absl::Status SessionConfig::MaybeUpdateAndValidate(
         "Number of output candidates need to be at least 1, but got: ",
         num_output_candidates_));
   }
+  if (max_visual_tokens_ < 0) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "MaxVisualTokens must be non-negative, but got: ",
+        max_visual_tokens_));
+  }
+  if (auto strategy =
+          ParseVisionTokenPruningStrategy(visual_token_pruning_strategy_);
+      !strategy.ok()) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "VisualTokenPruningStrategy is invalid: ",
+        strategy.status().message()));
+  }
 
   if (sampler_backend_ == Backend::UNSPECIFIED) {
     if (engine_settings.GetMainExecutorSettings().GetBackend() ==
@@ -573,6 +586,9 @@ std::ostream& operator<<(std::ostream& os, const SessionConfig& config) {
      << std::endl;
   os << "  ApplyPromptTemplatesInSession: "
      << config.GetApplyPromptTemplateInSession() << std::endl;
+  os << "  MaxVisualTokens: " << config.GetMaxVisualTokens() << std::endl;
+  os << "  VisualTokenPruningStrategy: "
+     << config.GetVisualTokenPruningStrategy() << std::endl;
   os << "  ScopedLoraFile: "
      << (config.GetScopedLoraFile() != nullptr ? "Present" : "Not present")
      << std::endl;

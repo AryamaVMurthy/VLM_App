@@ -22,9 +22,12 @@
 #include <ostream>
 #include <random>
 #include <utility>
+#include <vector>
 
+#include "absl/status/status.h"  // from @com_google_absl
 #include "absl/base/nullability.h"  // from @com_google_absl
 #include "absl/status/statusor.h"  // from @com_google_absl
+#include "absl/types/span.h"  // from @com_google_absl
 #include "litert/cc/litert_tensor_buffer.h"  // from @litert
 #include "runtime/components/constrained_decoding/constrained_decoder.h"
 #include "runtime/executor/llm_executor_processed_tokens.h"
@@ -181,8 +184,31 @@ class ExecutorTextData {
   // Setter for token_ids (moves the input).
   void SetTokenIds(::litert::TensorBuffer&& token_ids);
 
+  struct CachedTextEmbeddings {
+    int token_count = 0;
+    int floats_per_token = 0;
+    std::vector<float> values;
+
+    absl::Status Validate() const;
+    absl::StatusOr<absl::Span<const float>> GetTokenEmbedding(
+        int token_index) const;
+  };
+
+  const std::optional<CachedTextEmbeddings>& GetCachedTextEmbeddings() const {
+    return cached_text_embeddings_;
+  }
+
+  std::optional<CachedTextEmbeddings>& GetMutableCachedTextEmbeddings() {
+    return cached_text_embeddings_;
+  }
+
+  void SetCachedTextEmbeddings(CachedTextEmbeddings&& cached_text_embeddings);
+  void SetCachedTextEmbeddings(
+      std::optional<CachedTextEmbeddings>&& cached_text_embeddings);
+
  private:
   ::litert::TensorBuffer token_ids_;
+  std::optional<CachedTextEmbeddings> cached_text_embeddings_;
 };
 std::ostream& operator<<(std::ostream& os, const ExecutorTextData& text_data);
 
@@ -334,6 +360,10 @@ class ExecutorInputs {
   // Getters for NESTED members
   absl::StatusOr<const ::litert::TensorBuffer*> GetTextTokenIdsPtr() const;
   absl::StatusOr<::litert::TensorBuffer*> GetMutableTextTokenIdsPtr();
+  absl::StatusOr<const ExecutorTextData::CachedTextEmbeddings*>
+  GetCachedTextEmbeddingsPtr() const;
+  absl::StatusOr<ExecutorTextData::CachedTextEmbeddings*>
+  GetMutableCachedTextEmbeddingsPtr();
   absl::StatusOr<const ::litert::TensorBuffer*> GetVisionEmbeddingsPtr() const;
   absl::StatusOr<::litert::TensorBuffer*> GetMutableVisionEmbeddingsPtr();
   absl::StatusOr<const ::litert::TensorBuffer*> GetVisionPerLayerEmbeddingsPtr()

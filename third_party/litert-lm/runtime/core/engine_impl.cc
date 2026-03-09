@@ -71,6 +71,20 @@ absl::StatusOr<Environment&> GetEnvironment(EngineSettings& engine_settings,
         std::vector<Environment::Option> env_options;
         const auto& main_executor_settings =
             engine_settings.GetMainExecutorSettings();
+        auto configure_npu_library_dirs =
+            [&](absl::string_view library_dir,
+                absl::string_view source_description) {
+              env_options.push_back(::litert::Environment::Option{
+                  ::litert::Environment::OptionTag::DispatchLibraryDir,
+                  library_dir});
+              env_options.push_back(::litert::Environment::Option{
+                  ::litert::Environment::OptionTag::CompilerPluginLibraryDir,
+                  library_dir});
+              ABSL_LOG(INFO) << "Setting dispatch library path from "
+                             << source_description << ": " << library_dir;
+              ABSL_LOG(INFO) << "Setting compiler plugin path from "
+                             << source_description << ": " << library_dir;
+            };
 
         if ((main_executor_settings.GetBackend() == Backend::CPU) ||
             (main_executor_settings.GetBackend() == Backend::GPU)) {
@@ -87,13 +101,11 @@ absl::StatusOr<Environment&> GetEnvironment(EngineSettings& engine_settings,
               "Only CPU and GPU backends are supported.");
 #else
           if (!main_executor_settings.GetLitertDispatchLibDir().empty()) {
-            // If the dispatch library directory is provided, use it.
-            env_options.push_back(::litert::Environment::Option{
-                ::litert::Environment::OptionTag::DispatchLibraryDir,
-                main_executor_settings.GetLitertDispatchLibDir()});
-            ABSL_LOG(INFO) << "Setting dispatch library path from "
-                              "main_executor_settings: "
-                           << main_executor_settings.GetLitertDispatchLibDir();
+            // JIT-compiled NPU models need both the dispatch runtime and the
+            // compiler plugin in the same search root.
+            configure_npu_library_dirs(
+                main_executor_settings.GetLitertDispatchLibDir(),
+                "main_executor_settings");
           } else {
             // Otherwise, use the directory of the model file.
             std::string model_path(
@@ -104,11 +116,8 @@ absl::StatusOr<Environment&> GetEnvironment(EngineSettings& engine_settings,
             static const absl::NoDestructor<std::string> kDispatchLibraryPath(
                 path.parent_path().string());
             if (!kDispatchLibraryPath->empty()) {
-              ABSL_LOG(INFO)
-                  << "Setting dispatch library path: " << *kDispatchLibraryPath;
-              env_options.push_back(::litert::Environment::Option{
-                  ::litert::Environment::OptionTag::DispatchLibraryDir,
-                  absl::string_view(*kDispatchLibraryPath)});
+              configure_npu_library_dirs(*kDispatchLibraryPath,
+                                         "model_path parent");
             } else {
               ABSL_LOG(INFO) << "No dispatch library path provided.";
             }
@@ -173,7 +182,8 @@ class EngineImpl : public Engine {
         auto session,
         InitializeSessionBasic(executor_.get(), tokenizer_.get(),
                                /*vision_executor=*/vision_executor_.get(),
-                               /*audio_executor=*/audio_executor_.get(), config,
+                               /*audio_executor=*/audio_executor_.get(),
+                               litert_model_resources_.get(), config,
                                std::move(session_benchmark_info),
                                worker_thread_pool_.get()));
     if (benchmark_info_.has_value()) {

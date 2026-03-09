@@ -74,6 +74,10 @@ cc_library(
         ":tensor_buffer_util",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@litert//tflite/types:half",
+        "@litert//litert/cc:litert_element_type",
         "@litert//litert/cc:litert_macros",
         "//runtime/executor:llm_executor_io_types",
     ] + select({

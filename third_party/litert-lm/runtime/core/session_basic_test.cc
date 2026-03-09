@@ -15,6 +15,7 @@
 #include "runtime/core/session_basic.h"
 
 #include <array>
+#include <cmath>
 #include <filesystem>  // NOLINT: Required for path manipulation.
 #include <memory>
 #include <optional>
@@ -48,10 +49,13 @@
 #include "runtime/executor/executor_settings_base.h"
 #include "runtime/executor/fake_llm_executor.h"
 #include "runtime/executor/llm_executor_io_types.h"
+#include "runtime/executor/vision_executor.h"
 #include "runtime/framework/threadpool.h"
 #include "runtime/util/convert_tensor_buffer.h"
+#include "runtime/util/executor_data_util.h"
 #include "runtime/util/scoped_file.h"
 #include "runtime/util/status_macros.h"
+#include "runtime/util/tensor_buffer_util.h"
 #include "runtime/util/test_utils.h"  // IWYU pragma: keep
 
 namespace litert::lm {
@@ -122,6 +126,37 @@ absl::StatusOr<Responses> RunTextScoring(
   target_texts.push_back(target_text);
   return (*session)->RunTextScoring(target_texts, store_token_lengths);
 }
+
+class FakeVisionExecutor : public VisionExecutor {
+ public:
+  explicit FakeVisionExecutor(ExecutorVisionData vision_data)
+      : vision_data_(std::move(vision_data)) {}
+
+  absl::StatusOr<ExecutorVisionData> Encode(
+      const litert::TensorBuffer& input_image_tensor) override {
+    std::optional<TensorBuffer> embeddings = std::nullopt;
+    if (auto embeddings_status = vision_data_.GetEmbeddingsPtr();
+        embeddings_status.ok()) {
+      LITERT_ASSIGN_OR_RETURN(embeddings, (*embeddings_status)->Duplicate());
+    }
+    std::optional<TensorBuffer> per_layer_embeddings = std::nullopt;
+    if (auto per_layer_embeddings_status =
+            vision_data_.GetPerLayerEmbeddingsPtr();
+        per_layer_embeddings_status.ok()) {
+      LITERT_ASSIGN_OR_RETURN(per_layer_embeddings,
+                              (*per_layer_embeddings_status)->Duplicate());
+    }
+    return ExecutorVisionData(std::move(embeddings),
+                              std::move(per_layer_embeddings));
+  }
+
+  absl::StatusOr<std::vector<int>> GetExpectedInputDimension() const override {
+    return std::vector<int>{1, 2, 2, 3};
+  }
+
+ private:
+  ExecutorVisionData vision_data_;
+};
 
 class ExtendedTokenizer : public Tokenizer {
  public:
@@ -1088,6 +1123,236 @@ TEST_F(SessionBasicTest, ProcessAndCombineContentsEmptyFails) {
   auto result = session->ProcessAndCombineContents(preprocessed_contents);
   EXPECT_THAT(result, StatusIs(absl::StatusCode::kInvalidArgument,
                                "No token IDs found in preprocessed_contents."));
+}
+
+TEST_F(SessionBasicTest,
+       ProcessAndCombineContentsImageRespectsVisualTokenBudget) {
+  SessionConfig session_config = SessionConfig::CreateDefault();
+  session_config.SetStartTokenId(2);
+  session_config.SetSamplerBackend(Backend::CPU);
+  session_config.SetVisionModalityEnabled(true);
+  session_config.SetMaxVisualTokens(2);
+  session_config.GetMutableLlmModelType().mutable_gemma3n();
+
+  ASSERT_OK_AND_ASSIGN(auto executor,
+                       CreateFakeLlmExecutor(/*prefill_tokens=*/{{2, -1, -1}},
+                                             /*decode_tokens=*/{{1}}));
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto vision_embeddings,
+      CopyToTensorBuffer<float>({1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0},
+                                {1, 1, 4, 2}));
+  auto vision_executor = std::make_unique<FakeVisionExecutor>(
+      ExecutorVisionData(std::move(vision_embeddings), std::nullopt));
+
+  proto::BenchmarkParams benchmark_params;
+  BenchmarkInfo benchmark_info(benchmark_params);
+
+  ASSERT_OK_AND_ASSIGN(
+      auto session,
+      SessionBasic::Create(executor.get(), tokenizer_.get(),
+                           /*vision_executor=*/vision_executor.get(),
+                           /*audio_executor=*/nullptr, session_config,
+                           benchmark_info, worker_thread_pool_.get()));
+
+  LITERT_ASSERT_OK_AND_ASSIGN(auto image_tensor,
+                              CopyToTensorBuffer<float>(
+                                  {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                   0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
+                                  {1, 2, 2, 3}));
+  LITERT_ASSERT_OK_AND_ASSIGN(auto token_ids_buffer,
+                              tokenizer_->TokenIdsToTensorBuffer({42}));
+  std::vector<InputData> preprocessed_contents;
+  preprocessed_contents.emplace_back(InputText(std::move(token_ids_buffer)));
+  preprocessed_contents.emplace_back(InputImage(std::move(image_tensor)));
+
+  ASSERT_OK_AND_ASSIGN(
+      auto result, session->ProcessAndCombineContents(preprocessed_contents));
+
+  ASSERT_OK_AND_ASSIGN(const auto* text_data, result.GetTextDataPtr());
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto token_ids_span,
+      ReferTensorBufferAsSpan<int>(text_data->GetTokenIds()));
+  EXPECT_THAT(std::vector<int>(token_ids_span.begin(), token_ids_span.end()),
+              testing::ElementsAre(42, -1, -1));
+
+  ASSERT_OK_AND_ASSIGN(const auto* vision_data, result.GetVisionDataPtr());
+  ASSERT_OK_AND_ASSIGN(const auto* embeddings_ptr,
+                       vision_data->GetEmbeddingsPtr());
+  EXPECT_THAT(TensorBufferDims(*embeddings_ptr), testing::ElementsAre(1, 1, 2,
+                                                                      2));
+  LITERT_ASSERT_OK_AND_ASSIGN(auto embeddings_span,
+                              ReferTensorBufferAsSpan<float>(*embeddings_ptr));
+  EXPECT_THAT(std::vector<float>(embeddings_span.begin(), embeddings_span.end()),
+              testing::ElementsAre(1.0, 2.0, 7.0, 8.0));
+
+  EXPECT_THAT(session->GetBenchmarkInfo()->GetMarkDurations(),
+              testing::Contains(testing::Pair("vision_token_budget",
+                                              testing::_)));
+}
+
+TEST_F(SessionBasicTest,
+       ProcessAndCombineContentsImageUsesPromptConditionedVisualPruning) {
+  SessionConfig session_config = SessionConfig::CreateDefault();
+  // Keep the prompt-conditioning signal tied to the single provided prompt
+  // token so the attention-proxy scorer sees the intended embedding.
+  session_config.SetStartTokenId(-1);
+  session_config.SetSamplerBackend(Backend::CPU);
+  session_config.SetVisionModalityEnabled(true);
+  session_config.SetMaxVisualTokens(2);
+  session_config.SetVisualTokenPruningStrategy("prompt_conditioned_v1");
+  session_config.GetMutableLlmModelType().mutable_gemma3n();
+
+  auto prompt_embedder_model_path =
+      std::filesystem::path(::testing::SrcDir()) / kTestdataDir /
+      "dummy_embedding_cpu_model.tflite";
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto prompt_embedder_model,
+      litert::Model::CreateFromFile(prompt_embedder_model_path.string()));
+  ASSERT_OK_AND_ASSIGN(
+      auto prompt_embedding_lookup_manager,
+      EmbeddingLookupManager::Create(&prompt_embedder_model,
+                                     /*fully_supports_multi_modal=*/false));
+  std::vector<float> prompt_token_embedding;
+  ASSERT_OK(
+      prompt_embedding_lookup_manager->LookupPrefill(1, prompt_token_embedding));
+  float prompt_norm = 0.0f;
+  for (float value : prompt_token_embedding) {
+    prompt_norm += value * value;
+  }
+  prompt_norm = std::sqrt(prompt_norm);
+  ASSERT_GT(prompt_norm, 0.0f);
+  for (float& value : prompt_token_embedding) {
+    value /= prompt_norm;
+  }
+  ASSERT_GE(prompt_token_embedding.size(), 2u);
+  std::vector<float> orthogonal_prompt_features(prompt_token_embedding.size(),
+                                                0.0f);
+  orthogonal_prompt_features[0] = -prompt_token_embedding[1];
+  orthogonal_prompt_features[1] = prompt_token_embedding[0];
+  ASSERT_OK_AND_ASSIGN(auto normalized_prompt_features,
+                       BuildPromptConditioningVector(
+                           ExecutorTextData::CachedTextEmbeddings{
+                               .token_count = 1,
+                               .floats_per_token =
+                                   static_cast<int>(prompt_token_embedding.size()),
+                               .values = prompt_token_embedding,
+                           },
+                           /*feature_dim=*/prompt_token_embedding.size()));
+  std::vector<float> vision_embedding_values;
+  vision_embedding_values.reserve(normalized_prompt_features.size() * 5);
+  auto append_token = [&](float prompt_scale, float orthogonal_scale) {
+    for (int i = 0; i < normalized_prompt_features.size(); ++i) {
+      vision_embedding_values.push_back(
+          prompt_scale * normalized_prompt_features[i] +
+          orthogonal_scale * orthogonal_prompt_features[i]);
+    }
+  };
+  append_token(/*prompt_scale=*/0.0f, /*orthogonal_scale=*/0.1f);
+  append_token(/*prompt_scale=*/1.0f, /*orthogonal_scale=*/0.0f);
+  append_token(/*prompt_scale=*/0.98f, /*orthogonal_scale=*/0.02f);
+  append_token(/*prompt_scale=*/0.6f, /*orthogonal_scale=*/0.8f);
+  append_token(/*prompt_scale=*/0.0f, /*orthogonal_scale=*/-0.1f);
+
+  ASSERT_OK_AND_ASSIGN(auto executor,
+                       CreateFakeLlmExecutor(/*prefill_tokens=*/{{2, -1, -1}},
+                                             /*decode_tokens=*/{{1}}));
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto vision_embeddings,
+      CopyToTensorBuffer<float>(vision_embedding_values,
+                                {1, 1, 5,
+                                 static_cast<int>(
+                                     normalized_prompt_features.size())}));
+  auto vision_executor = std::make_unique<FakeVisionExecutor>(
+      ExecutorVisionData(std::move(vision_embeddings), std::nullopt));
+
+  ASSERT_OK_AND_ASSIGN(
+      auto session,
+      SessionBasic::Create(executor.get(), tokenizer_.get(),
+                           /*vision_executor=*/vision_executor.get(),
+                           /*audio_executor=*/nullptr,
+                           std::move(prompt_embedding_lookup_manager),
+                           session_config,
+                           std::nullopt, worker_thread_pool_.get()));
+
+  LITERT_ASSERT_OK_AND_ASSIGN(auto image_tensor,
+                              CopyToTensorBuffer<float>(
+                                  {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                   0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
+                                  {1, 2, 2, 3}));
+  LITERT_ASSERT_OK_AND_ASSIGN(auto token_ids_buffer,
+                              tokenizer_->TokenIdsToTensorBuffer({1}));
+  std::vector<InputData> preprocessed_contents;
+  preprocessed_contents.emplace_back(InputText(std::move(token_ids_buffer)));
+  preprocessed_contents.emplace_back(InputImage(std::move(image_tensor)));
+
+  ASSERT_OK_AND_ASSIGN(
+      auto result, session->ProcessAndCombineContents(preprocessed_contents));
+
+  ASSERT_OK_AND_ASSIGN(const auto* vision_data, result.GetVisionDataPtr());
+  ASSERT_OK_AND_ASSIGN(const auto* embeddings_ptr,
+                       vision_data->GetEmbeddingsPtr());
+  EXPECT_THAT(TensorBufferDims(*embeddings_ptr),
+              testing::ElementsAre(1, 1, 2,
+                                   normalized_prompt_features.size()));
+  LITERT_ASSERT_OK_AND_ASSIGN(auto embeddings_span,
+                              ReferTensorBufferAsSpan<float>(*embeddings_ptr));
+  std::vector<float> expected_embeddings;
+  expected_embeddings.reserve(normalized_prompt_features.size() * 2);
+  for (int i = 0; i < normalized_prompt_features.size(); ++i) {
+    expected_embeddings.push_back(0.1f * orthogonal_prompt_features[i]);
+  }
+  for (int i = 0; i < normalized_prompt_features.size(); ++i) {
+    expected_embeddings.push_back(-0.1f * orthogonal_prompt_features[i]);
+  }
+  EXPECT_THAT(std::vector<float>(embeddings_span.begin(), embeddings_span.end()),
+              testing::ElementsAreArray(expected_embeddings));
+}
+
+TEST_F(SessionBasicTest,
+       ProcessAndCombineContentsPromptConditionedPruningRequiresPromptEmbedder) {
+  SessionConfig session_config = SessionConfig::CreateDefault();
+  session_config.SetStartTokenId(2);
+  session_config.SetSamplerBackend(Backend::CPU);
+  session_config.SetVisionModalityEnabled(true);
+  session_config.SetMaxVisualTokens(2);
+  session_config.SetVisualTokenPruningStrategy("prompt_conditioned_v1");
+  session_config.GetMutableLlmModelType().mutable_gemma3n();
+
+  ASSERT_OK_AND_ASSIGN(auto executor,
+                       CreateFakeLlmExecutor(/*prefill_tokens=*/{{2, -1, -1}},
+                                             /*decode_tokens=*/{{1}}));
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto vision_embeddings,
+      CopyToTensorBuffer<float>({1.0f, 0.0f, 0.0f, 1.0f}, {1, 1, 2, 2}));
+  auto vision_executor = std::make_unique<FakeVisionExecutor>(
+      ExecutorVisionData(std::move(vision_embeddings), std::nullopt));
+
+  ASSERT_OK_AND_ASSIGN(
+      auto session,
+      SessionBasic::Create(executor.get(), tokenizer_.get(),
+                           /*vision_executor=*/vision_executor.get(),
+                           /*audio_executor=*/nullptr, session_config,
+                           std::nullopt, worker_thread_pool_.get()));
+
+  LITERT_ASSERT_OK_AND_ASSIGN(auto image_tensor,
+                              CopyToTensorBuffer<float>(
+                                  {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                   0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
+                                  {1, 2, 2, 3}));
+  LITERT_ASSERT_OK_AND_ASSIGN(auto token_ids_buffer,
+                              tokenizer_->TokenIdsToTensorBuffer({1}));
+  std::vector<InputData> preprocessed_contents;
+  preprocessed_contents.emplace_back(InputText(std::move(token_ids_buffer)));
+  preprocessed_contents.emplace_back(InputImage(std::move(image_tensor)));
+
+  auto process_status = session->ProcessAndCombineContents(preprocessed_contents);
+  ASSERT_FALSE(process_status.ok());
+  EXPECT_EQ(process_status.status().code(),
+            absl::StatusCode::kFailedPrecondition);
+  EXPECT_THAT(std::string(process_status.status().message()),
+              testing::HasSubstr(
+                  "prompt_conditioned_v1 requires the real FastVLM text "
+                  "embedder"));
 }
 
 TEST_F(SessionBasicTest, RunIncrementalPrefillWithDecode) {

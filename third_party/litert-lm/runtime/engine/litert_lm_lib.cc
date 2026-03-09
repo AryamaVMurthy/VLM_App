@@ -58,6 +58,7 @@
 #include "runtime/engine/engine_factory.h"
 #include "runtime/engine/engine_settings.h"
 #include "runtime/engine/io_types.h"
+#include "runtime/engine/litert_lm_settings_util.h"
 #include "runtime/executor/executor_settings_base.h"
 #include "runtime/executor/llm_executor_settings.h"
 #include "runtime/proto/sampler_params.pb.h"
@@ -116,23 +117,6 @@ absl::StatusOr<ModelAssets> CreateModelAssets(
   ASSIGN_OR_RETURN(auto scoped_file, ScopedFile::Open(settings.model_path));
   return ModelAssets::Create(
       std::make_shared<ScopedFile>(std::move(scoped_file)));
-}
-
-// Helper to process the sampler backend string and return a sampler backend
-// if possible. Otherwise, return std::nullopt.
-std::optional<Backend> GetSamplerBackend(const LiteRtLmSettings& settings) {
-  const std::string& sampler_backend_str = settings.sampler_backend;
-  if (sampler_backend_str.empty()) {
-    return std::nullopt;
-  }
-  const absl::StatusOr<Backend> sampler_backend =
-      GetBackendFromString(sampler_backend_str);
-  if (!sampler_backend.ok()) {
-    ABSL_LOG(WARNING) << "Ignore invalid sampler backend string: "
-                      << sampler_backend.status();
-    return std::nullopt;
-  }
-  return *sampler_backend;
 }
 
 // Creates the EngineSettings from the LiteRtLmSettings.
@@ -287,24 +271,6 @@ absl::StatusOr<EngineSettings> CreateEngineSettings(
   }
 
   return engine_settings;
-}
-
-// Creates the SessionConfig from the LiteRtLmSettings.
-SessionConfig CreateSessionConfig(const LiteRtLmSettings& settings) {
-  // Set the session config.
-  auto session_config = litert::lm::SessionConfig::CreateDefault();
-  session_config.SetNumOutputCandidates(settings.num_output_candidates);
-  const std::optional<Backend> sampler_backend = GetSamplerBackend(settings);
-  if (sampler_backend.has_value()) {
-    session_config.SetSamplerBackend(*sampler_backend);
-  }
-  if (settings.vision_backend.has_value()) {
-    session_config.SetVisionModalityEnabled(true);
-  }
-  if (settings.audio_backend.has_value()) {
-    session_config.SetAudioModalityEnabled(true);
-  }
-  return session_config;
 }
 
 absl::Status PrintJsonMessage(const JsonMessage& message,
@@ -474,15 +440,23 @@ absl::Status RunSingleTurnConversation(const std::string& input_prompt,
   json content_list = json::array();
   RETURN_IF_ERROR(BuildContentList(input_prompt, content_list, settings));
   std::stringstream captured_output;
+  ConversationOptionalArgs optional_args =
+      CreateConversationOptionalArgs(settings);
   if (settings.async) {
     RETURN_IF_ERROR(conversation->SendMessageAsync(
         json::object({{"role", "user"}, {"content", content_list}}),
-        CreatePrintMessageCallback(captured_output, settings.benchmark)));
+        CreatePrintMessageCallback(captured_output, settings.benchmark),
+        {.decoding_constraint = std::move(optional_args.decoding_constraint),
+         .max_output_tokens = optional_args.max_output_tokens}));
     RETURN_IF_ERROR(engine->WaitUntilDone(kWaitUntilDoneTimeout));
   } else {
     ASSIGN_OR_RETURN(auto model_message,
-                     conversation->SendMessage(json::object(
-                         {{"role", "user"}, {"content", content_list}})));
+                     conversation->SendMessage(
+                         json::object(
+                             {{"role", "user"}, {"content", content_list}}),
+                         {.decoding_constraint =
+                              std::move(optional_args.decoding_constraint),
+                          .max_output_tokens = optional_args.max_output_tokens}));
     RETURN_IF_ERROR(PrintJsonMessage(std::get<JsonMessage>(model_message),
                                      captured_output));
   }
@@ -513,15 +487,24 @@ absl::Status RunMultiTurnConversation(const LiteRtLmSettings& settings,
     if (content_list.empty()) {
       continue;
     }
+    ConversationOptionalArgs optional_args =
+        CreateConversationOptionalArgs(settings);
     if (settings.async) {
       RETURN_IF_ERROR(conversation->SendMessageAsync(
           json::object({{"role", "user"}, {"content", content_list}}),
-          CreatePrintMessageCallback(captured_output, settings.benchmark)));
+          CreatePrintMessageCallback(captured_output, settings.benchmark),
+          {.decoding_constraint = std::move(optional_args.decoding_constraint),
+           .max_output_tokens = optional_args.max_output_tokens}));
       RETURN_IF_ERROR(engine->WaitUntilDone(kWaitUntilDoneTimeout));
     } else {
       ASSIGN_OR_RETURN(auto model_message,
-                       conversation->SendMessage(json::object(
-                           {{"role", "user"}, {"content", content_list}})));
+                       conversation->SendMessage(
+                           json::object(
+                               {{"role", "user"}, {"content", content_list}}),
+                           {.decoding_constraint =
+                                std::move(optional_args.decoding_constraint),
+                            .max_output_tokens =
+                                optional_args.max_output_tokens}));
       RETURN_IF_ERROR(PrintJsonMessage(std::get<JsonMessage>(model_message),
                                        captured_output));
     }
@@ -745,6 +728,9 @@ absl::Status RunLiteRtLm(const LiteRtLmSettings& settings,
 
   // Get the session config.
   SessionConfig session_config = CreateSessionConfig(settings);
+  const std::optional<ConstraintProviderConfig>
+      conversation_constraint_provider_config =
+          CreateConversationConstraintProviderConfig(settings);
 
   for (int i = 0; i < settings.num_iterations; ++i) {
     std::unique_ptr<tflite::profiling::memory::MemoryUsageMonitor> mem_monitor;
@@ -781,10 +767,16 @@ absl::Status RunLiteRtLm(const LiteRtLmSettings& settings,
       }
     } else {
       ABSL_LOG(INFO) << "Creating conversation";
+      auto conversation_config_builder =
+          ConversationConfig::Builder().SetSessionConfig(session_config);
+      if (conversation_constraint_provider_config.has_value()) {
+        ABSL_LOG(INFO) << "Enabling LLGuidance regex constraint for "
+                          "conversation decode.";
+        conversation_config_builder.SetConstraintProviderConfig(
+            *conversation_constraint_provider_config);
+      }
       ASSIGN_OR_RETURN(auto conversation_config,
-                       ConversationConfig::Builder()
-                           .SetSessionConfig(session_config)
-                           .Build(*engine));
+                       conversation_config_builder.Build(*engine));
       ASSIGN_OR_RETURN(conversation,
                        Conversation::Create(*engine, conversation_config));
       if (settings.multi_turns) {

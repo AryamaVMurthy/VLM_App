@@ -14,6 +14,7 @@
 
 #include "runtime/components/embedding_lookup/embedding_lookup_manager.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -232,6 +233,104 @@ absl::Status EmbeddingLookupManager::LookupPrefill(
                 [](const auto& embedding_lookup) {
                   return !embedding_lookup->HasRemainingEmbeddings();
                 });
+  return absl::OkStatus();
+}
+
+absl::Status EmbeddingLookupManager::LookupPrefillWithCachedTextEmbeddings(
+    int token,
+    const ExecutorTextData::CachedTextEmbeddings& cached_text_embeddings,
+    size_t cached_text_token_index, std::vector<float>& output_vector) {
+  RETURN_IF_ERROR(cached_text_embeddings.Validate());
+  if (text_embedding_lookup_ == nullptr) {
+    return absl::InternalError(
+        "Text embedding lookup is null. Please ensure that the "
+        "EmbeddingLookupManager is initialized properly.");
+  }
+  const size_t floats_per_token = text_embedding_lookup_->GetFloatsPerToken();
+  if (cached_text_embeddings.floats_per_token != floats_per_token) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Cached text embeddings floats_per_token ",
+        cached_text_embeddings.floats_per_token,
+        " does not match text embedding lookup floats_per_token ",
+        floats_per_token, "."));
+  }
+  output_vector.resize(floats_per_token);
+  if (token < 0) {
+    return LookupPrefill(token, output_vector);
+  }
+
+  ASSIGN_OR_RETURN(auto token_embedding,
+                   cached_text_embeddings.GetTokenEmbedding(
+                       static_cast<int>(cached_text_token_index)));
+  std::memcpy(output_vector.data(), token_embedding.data(),
+              floats_per_token * sizeof(float));
+  return absl::OkStatus();
+}
+
+absl::Status EmbeddingLookupManager::LookupPrefillWithCachedTextEmbeddings(
+    absl::Span<const int> tokens,
+    const ExecutorTextData::CachedTextEmbeddings& cached_text_embeddings,
+    size_t* cached_text_token_offset, litert::TensorBuffer* output_tensor,
+    size_t token_offset) {
+  if (cached_text_token_offset == nullptr) {
+    return absl::InvalidArgumentError(
+        "cached_text_token_offset must not be null.");
+  }
+  if (output_tensor == nullptr) {
+    return absl::InvalidArgumentError("Prefill output tensor buffer is null.");
+  }
+  RETURN_IF_ERROR(cached_text_embeddings.Validate());
+  if (text_embedding_lookup_ == nullptr) {
+    return absl::InternalError(
+        "Text embedding lookup is null. Please ensure that the "
+        "EmbeddingLookupManager is initialized properly.");
+  }
+
+  const size_t floats_per_token = text_embedding_lookup_->GetFloatsPerToken();
+  if (cached_text_embeddings.floats_per_token != floats_per_token) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Cached text embeddings floats_per_token ",
+        cached_text_embeddings.floats_per_token,
+        " does not match text embedding lookup floats_per_token ",
+        floats_per_token, "."));
+  }
+
+  const size_t bytes_per_token = floats_per_token * sizeof(float);
+  const size_t byte_offset = token_offset * bytes_per_token;
+  LITERT_ASSIGN_OR_RETURN(auto output_tensor_size, output_tensor->PackedSize());
+  if (byte_offset + bytes_per_token * tokens.size() > output_tensor_size) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("The byte offset and the total number of bytes to be "
+                     "written must not exceed the size of the output tensor. "
+                     "Byte offset: ",
+                     byte_offset, ". Bytes per token: ", bytes_per_token,
+                     ". Number of tokens: ", tokens.size(),
+                     ". Output tensor bytes: ", output_tensor_size));
+  }
+
+  LITERT_ASSIGN_OR_RETURN(
+      auto output_tensor_lock_and_addr,
+      TensorBufferScopedLock::Create(*output_tensor,
+                                     litert::TensorBuffer::LockMode::kWrite));
+  uint8_t* output_tensor_ptr =
+      static_cast<uint8_t*>(output_tensor_lock_and_addr.second) + byte_offset;
+  std::vector<float> multimodal_embedding(floats_per_token, 0.0f);
+  for (const int token : tokens) {
+    if (token >= 0) {
+      ASSIGN_OR_RETURN(
+          auto token_embedding,
+          cached_text_embeddings.GetTokenEmbedding(
+              static_cast<int>(*cached_text_token_offset)));
+      std::memcpy(output_tensor_ptr, token_embedding.data(), bytes_per_token);
+      ++(*cached_text_token_offset);
+    } else {
+      std::fill(multimodal_embedding.begin(), multimodal_embedding.end(), 0.0f);
+      RETURN_IF_ERROR(LookupPrefill(token, multimodal_embedding));
+      std::memcpy(output_tensor_ptr, multimodal_embedding.data(),
+                  bytes_per_token);
+    }
+    output_tensor_ptr += bytes_per_token;
+  }
   return absl::OkStatus();
 }
 

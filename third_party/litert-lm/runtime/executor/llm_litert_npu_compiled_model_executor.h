@@ -178,8 +178,9 @@ class LlmLiteRtNpuCompiledModelExecutor : public LlmExecutor {
                             std::move(decode_output_buffers)) {}
   };
 
-  // Holds the context for the NPU auxiliary model, which contains several
-  // signatures for Mask, RoPE and KV cache update computation.
+  // Holds the context for the NPU auxiliary model, which provides the mask and
+  // RoPE signatures wired into the transformer inputs. KV cache updates are
+  // applied directly by the executor.
   struct NpuAuxiliaryContext {
     ::litert::CompiledModel npu_auxiliary_compiled_model;
     explicit NpuAuxiliaryContext(
@@ -320,7 +321,7 @@ class LlmLiteRtNpuCompiledModelExecutor : public LlmExecutor {
       ::litert::CompiledModel& compiled_model_auxiliary,
       const InferenceContext& rope_inference_context,
       const InferenceContext& mask_inference_context,
-      const InferenceContext& cache_update_inference_context);
+      InferenceContext& cache_update_inference_context);
 
   // Clears all buffers in the provided 'buffers' map that belong to the KV
   // cache.
@@ -374,6 +375,9 @@ class LlmLiteRtNpuCompiledModelExecutor : public LlmExecutor {
   InferenceContext llm_inference_context_;
   InferenceContext cache_update_inference_context_;
   SortedPrefillSignatureMap prefill_signature_map_;
+  const ExecutorTextData::CachedTextEmbeddings*
+      current_prefill_cached_text_embeddings_ = nullptr;
+  size_t current_prefill_cached_text_token_offset_ = 0;
 
   // The sampled ids to use for external sampling.
   // The layout is batch-major.

@@ -67,6 +67,7 @@ TEST(LlmExecutorIoTypesTest, InputsPrint) {
       "  TextData: ExecutorTextData: {\n"
       "  TokenIds: TensorBuffer: [[1, 2], [3, 4], [5, 6]] shape=(3, "
       "2)\n"  // Assuming TensorBuffer prints this way
+      "  CachedTextEmbeddings: nullopt\n"
       "}\n"
       "  VisionData: nullopt (ExecutorInputs::vision_data_ is not "
       "set.)\n"
@@ -213,6 +214,44 @@ TEST(LlmExecutorIoTypesTest, ExecutorTextDataGetSet) {
   ASSERT_TRUE(read_success);
   EXPECT_EQ(read_data[0], 9);
   EXPECT_EQ(read_data[1], 10);
+}
+
+TEST(LlmExecutorIoTypesTest, ExecutorTextDataCachedTextEmbeddingsGetSet) {
+  struct alignas(LITERT_HOST_MEMORY_BUFFER_ALIGNMENT) {
+    int32_t d[2] = {7, 8};
+  } data;
+  auto env = Environment::Create({});
+  auto token_ids = TensorBuffer::CreateFromHostMemory(
+      *env,
+      ::litert::RankedTensorType(ElementType::Int32, Layout(Dimensions({2}))),
+      data.d, 2 * sizeof(int32_t));
+  ASSERT_TRUE(token_ids.HasValue());
+
+  ExecutorTextData text_data(std::move(*token_ids));
+
+  ExecutorTextData::CachedTextEmbeddings cached_text_embeddings;
+  cached_text_embeddings.token_count = 2;
+  cached_text_embeddings.floats_per_token = 3;
+  cached_text_embeddings.values = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  ASSERT_TRUE(cached_text_embeddings.Validate().ok())
+      << cached_text_embeddings.Validate();
+  text_data.SetCachedTextEmbeddings(std::move(cached_text_embeddings));
+
+  const auto& get_cached_text_embeddings =
+      text_data.GetCachedTextEmbeddings();
+  ASSERT_TRUE(get_cached_text_embeddings.has_value());
+  EXPECT_EQ(get_cached_text_embeddings->token_count, 2);
+  EXPECT_EQ(get_cached_text_embeddings->floats_per_token, 3);
+  EXPECT_EQ(get_cached_text_embeddings->values,
+            (std::vector<float>{1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f}));
+
+  auto token_embedding_status =
+      get_cached_text_embeddings->GetTokenEmbedding(1);
+  ASSERT_TRUE(token_embedding_status.ok())
+      << token_embedding_status.status();
+  auto token_embedding = token_embedding_status.value();
+  EXPECT_EQ(std::vector<float>(token_embedding.begin(), token_embedding.end()),
+            (std::vector<float>{4.0f, 5.0f, 6.0f}));
 }
 
 TEST(LlmExecutorIoTypesTest, ExecutorVisionDataGetSet) {

@@ -19,6 +19,8 @@
 
 #include "absl/base/nullability.h"  // from @com_google_absl
 #include "absl/status/statusor.h"  // from @com_google_absl
+#include "runtime/components/embedding_lookup/embedding_lookup_manager.h"
+#include "runtime/components/model_resources.h"
 #include "runtime/components/tokenizer.h"
 #include "runtime/core/session_basic.h"
 #include "runtime/engine/engine.h"
@@ -29,17 +31,32 @@
 #include "runtime/executor/vision_executor.h"
 #include "runtime/framework/threadpool.h"
 #include "runtime/proto/sampler_params.pb.h"
+#include "runtime/util/status_macros.h"  // IWYU pragma: keep
 
 namespace litert::lm {
 
 absl::StatusOr<std::unique_ptr<Engine::Session>> InitializeSessionBasic(
     LlmExecutor* executor, Tokenizer* tokenizer,
     VisionExecutor* vision_executor, AudioExecutor* audio_executor,
+    ModelResources* model_resources,
     const SessionConfig& session_config,
     std::optional<BenchmarkInfo> benchmark_info,
     ThreadPool* absl_nonnull worker_thread_pool) {
+  std::unique_ptr<EmbeddingLookupManager> prompt_embedding_lookup_manager =
+      nullptr;
+  if (model_resources != nullptr) {
+    auto text_embedder_model =
+        model_resources->GetTFLiteModel(ModelType::kTfLiteEmbedder);
+    if (text_embedder_model.ok()) {
+      ASSIGN_OR_RETURN(prompt_embedding_lookup_manager,
+                       EmbeddingLookupManager::Create(
+                           *text_embedder_model,
+                           /*fully_supports_multi_modal=*/false));
+    }
+  }
   auto session =
       SessionBasic::Create(executor, tokenizer, vision_executor, audio_executor,
+                           std::move(prompt_embedding_lookup_manager),
                            session_config, benchmark_info, worker_thread_pool);
   return session;
 }

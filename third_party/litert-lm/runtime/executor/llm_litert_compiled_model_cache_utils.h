@@ -72,6 +72,16 @@ namespace litert::lm {
     int num_tokens_to_drop, int init_tokens_to_retain, int current_step,
     int& start_position, size_t context_size);
 
+// Writes one or more KV cache slice tensors back into the corresponding KV
+// cache tensors. The first value in `input_pos` is used as the slice start
+// offset for both decode and prefill cache updates.
+::litert::Expected<void> UpdateKvCacheFromSlices(
+    absl::flat_hash_map<absl::string_view, ::litert::TensorBuffer>*
+        input_kv_cache_buffers,
+    const absl::flat_hash_map<absl::string_view, ::litert::TensorBuffer>&
+        kv_cache_slice_buffers,
+    const ::litert::TensorBuffer& input_pos);
+
 // Function to expand the buffer from src_data to dst_data. This function can
 // only handle a single expansion axis. Args:
 //   src_data: The source data.

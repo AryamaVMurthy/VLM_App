@@ -302,6 +302,12 @@ class LlmLiteRtCompiledModelExecutorBase : public LlmExecutor {
   // The embedding lookup for the optional per layer embedder model.
   std::unique_ptr<EmbeddingLookupManager> per_layer_embedding_lookup_;
 
+  // Optional cached text embeddings prepared before prefill, used to avoid
+  // re-running the text embedder for the same prompt tokens.
+  const ExecutorTextData::CachedTextEmbeddings*
+      current_prefill_cached_text_embeddings_ = nullptr;
+  size_t current_prefill_cached_text_token_offset_ = 0;
+
   // Whether to use FP16 precision for the calculation.
   bool use_fp16_precision_;
 

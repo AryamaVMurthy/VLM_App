@@ -71,7 +71,7 @@ TEST(SessionFactoryTest, InitializeSessionBasic) {
   auto session = InitializeSessionBasic(
       &executor, &tokenizer,
       /*vision_executor=*/nullptr,
-      /*audio_executor=*/nullptr, session_config,
+      /*audio_executor=*/nullptr, /*model_resources=*/nullptr, session_config,
       /*benchmark_info=*/std::nullopt, &worker_thread_pool);
   EXPECT_OK(session);
 }

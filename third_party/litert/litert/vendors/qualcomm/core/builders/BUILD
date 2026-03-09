@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["@org_tensorflow//tensorflow:license"],
@@ -83,10 +84,28 @@ cc_library(
     hdrs = ["embedding_lookup_op_builder.h"],
     deps = [
         ":op_builder",
+        ":quantize_op_builder",
+        "//tflite/types:half",
         "//litert/vendors/qualcomm/core:tensor_pool",
         "//litert/vendors/qualcomm/core/utils:log",
         "//litert/vendors/qualcomm/core/wrappers:op_wrapper",
+        "//litert/vendors/qualcomm/core/wrappers:quantize_params_wrapper",
         "//litert/vendors/qualcomm/core/wrappers:tensor_wrapper",
+        "@qairt//:qnn_lib_headers",
+    ],
+)
+
+cc_test(
+    name = "embedding_lookup_op_builder_test",
+    srcs = ["embedding_lookup_op_builder_test.cc"],
+    deps = [
+        ":embedding_lookup_op_builder",
+        "//litert/vendors/qualcomm/core:op_code",
+        "//litert/vendors/qualcomm/core:tensor_pool",
+        "//litert/vendors/qualcomm/core/wrappers:quantize_params_wrapper",
+        "//litert/vendors/qualcomm/core/wrappers:tensor_wrapper",
+        "//tflite/types:half",
+        "@com_google_googletest//:gtest_main",
         "@qairt//:qnn_lib_headers",
     ],
 )

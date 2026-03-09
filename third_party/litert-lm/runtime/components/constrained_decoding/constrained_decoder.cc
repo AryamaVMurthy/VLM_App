@@ -78,14 +78,11 @@ absl::Status ConstrainedDecoder::MaskLogits(
   int batch_size = logits_dims[0];
   int sequence_length = logits_dims[1];
   int vocab_size = logits_dims[2];
+  const int constraint_vocab_size = constraint_->GetVocabularySize();
   RET_CHECK_EQ(sequence_length, 1) << "Only support sequence length 1.";
-  // It is possible that the constraint vocabulary size is larger than the model
-  // vocabulary size. The remaining tokens in the constraint vocabulary are
-  // treated as unused tokens.
-  RET_CHECK_LE(vocab_size, constraint_->GetVocabularySize())
-      << "Vocabulary size [" << vocab_size
-      << "] does not match the expected vocabulary size ["
-      << constraint_->GetVocabularySize() << "].";
+  // The model and tokenizer vocabularies can differ in either direction. Any
+  // model logits that do not map to a tokenizer token are treated as
+  // unsupported and therefore masked out.
   RET_CHECK_EQ(batch_size, batch_size_)
       << "Batch size [" << batch_size
       << "] does not match the expected batch size [" << batch_size_ << "].";
@@ -94,7 +91,7 @@ absl::Status ConstrainedDecoder::MaskLogits(
     ASSIGN_OR_RETURN(auto bitmap,
                      constraint_->ComputeBitmap(*constraint_state));
     for (int i = 0; i < vocab_size; ++i) {
-      if (!bitmap->Get(i)) {
+      if (i >= constraint_vocab_size || !bitmap->Get(i)) {
         logits.data()[b * vocab_size + i] =
             std::numeric_limits<float>::lowest();
       }
@@ -111,14 +108,11 @@ absl::Status ConstrainedDecoder::MaskLogits(
   int batch_size = logits_dims[0];
   int sequence_length = logits_dims[1];
   int vocab_size = logits_dims[2];
+  const int constraint_vocab_size = constraint_->GetVocabularySize();
   RET_CHECK_EQ(sequence_length, 1) << "Only support sequence length 1.";
-  // It is possible that the constraint vocabulary size is larger than the model
-  // vocabulary size. The remaining tokens in the constraint vocabulary are
-  // treated as unused tokens.
-  RET_CHECK_LE(vocab_size, constraint_->GetVocabularySize())
-      << "Vocabulary size [" << vocab_size
-      << "] does not match the expected vocabulary size ["
-      << constraint_->GetVocabularySize() << "].";
+  // The model and tokenizer vocabularies can differ in either direction. Any
+  // model logits that do not map to a tokenizer token are treated as
+  // unsupported and therefore masked out.
   RET_CHECK_EQ(batch_size, batch_size_)
       << "Batch size [" << batch_size
       << "] does not match the expected batch size [" << batch_size_ << "].";
@@ -127,7 +121,7 @@ absl::Status ConstrainedDecoder::MaskLogits(
     ASSIGN_OR_RETURN(auto bitmap,
                      constraint_->ComputeBitmap(*constraint_state));
     for (int i = 0; i < vocab_size; ++i) {
-      if (!bitmap->Get(i)) {
+      if (i >= constraint_vocab_size || !bitmap->Get(i)) {
         logits.data()[b * vocab_size + i] = tflite::half::min();
       }
     }

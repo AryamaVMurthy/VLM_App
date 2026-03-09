@@ -38,6 +38,7 @@
 #include "litert/cc/litert_macros.h"  // from @litert
 #include "litert/cc/litert_tensor_buffer.h"  // from @litert
 #include "runtime/components/constrained_decoding/constraint.h"
+#include "runtime/components/embedding_lookup/embedding_lookup_manager.h"
 #include "runtime/components/model_resources.h"
 #include "runtime/components/sampler.h"
 #include "runtime/components/sampler_factory.h"
@@ -59,6 +60,65 @@
 #include "runtime/util/tensor_buffer_util.h"
 
 namespace litert::lm {
+namespace {
+
+absl::StatusOr<VisionTokenPruningConfig> CreateVisionTokenPruningConfig(
+    const SessionConfig& session_config) {
+  VisionTokenPruningConfig config;
+  ASSIGN_OR_RETURN(
+      config.strategy,
+      ParseVisionTokenPruningStrategy(
+          session_config.GetVisualTokenPruningStrategy()));
+  return config;
+}
+
+bool UsesPromptConditionedPruning(
+    const std::optional<VisionTokenPruningConfig>& pruning_config) {
+  return pruning_config.has_value() &&
+         pruning_config->strategy ==
+             VisionTokenPruningStrategy::kPromptConditionedV1;
+}
+
+absl::Status AppendTextTokenEmbeddingsToCache(
+    EmbeddingLookupManager& embedding_lookup_manager,
+    absl::Span<const int> text_token_ids,
+    CachedTextEmbeddings& cached_text_embeddings) {
+  auto* text_embedding_lookup =
+      embedding_lookup_manager.GetTextEmbeddingLookup();
+  if (text_embedding_lookup == nullptr) {
+    return absl::FailedPreconditionError(
+        "Prompt-conditioned pruning requires a real text embedding lookup, "
+        "but the embedding lookup manager does not own one.");
+  }
+
+  const int floats_per_token =
+      static_cast<int>(text_embedding_lookup->GetFloatsPerToken());
+  if (cached_text_embeddings.token_count == 0) {
+    cached_text_embeddings.floats_per_token = floats_per_token;
+  } else if (cached_text_embeddings.floats_per_token != floats_per_token) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Cached text embedding dimension changed from ",
+        cached_text_embeddings.floats_per_token, " to ", floats_per_token,
+        " while appending prompt text embeddings."));
+  }
+
+  std::vector<float> token_embedding(floats_per_token, 0.0f);
+  for (const int token_id : text_token_ids) {
+    if (token_id < 0) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Prompt text token ids must be non-negative, but got: ", token_id));
+    }
+    RETURN_IF_ERROR(
+        embedding_lookup_manager.LookupPrefill(token_id, token_embedding));
+    cached_text_embeddings.values.insert(cached_text_embeddings.values.end(),
+                                         token_embedding.begin(),
+                                         token_embedding.end());
+    ++cached_text_embeddings.token_count;
+  }
+  return cached_text_embeddings.Validate();
+}
+
+}  // namespace
 
 // Helper macro to check if the task has been cancelled.
 #define RETURN_IF_CANCELLED(cancelled, task_id, callback)             \
@@ -500,10 +560,17 @@ absl::Status ExecutionManager::UpdateAllTasksToState(
 
 absl::StatusOr<ExecutorInputs> ExecutionManager::ProcessAndCombineContents(
     const std::vector<InputData>& preprocessed_contents,
+    const SessionConfig& session_config,
     std::optional<BenchmarkInfo>& benchmark_info) {
   std::vector<int> combined_token_ids;
   std::vector<ExecutorVisionData> all_image_data;
   std::vector<ExecutorAudioData> all_audio_data;
+  std::optional<CachedTextEmbeddings> cached_text_embeddings = std::nullopt;
+  std::optional<VisionTokenPruningConfig> pruning_config = std::nullopt;
+  if (session_config.GetMaxVisualTokens() > 0) {
+    ASSIGN_OR_RETURN(pruning_config,
+                     CreateVisionTokenPruningConfig(session_config));
+  }
   for (const auto& preprocessed_content : preprocessed_contents) {
     if (const auto* input_text =
             std::get_if<InputText>(&preprocessed_content)) {
@@ -517,6 +584,25 @@ absl::StatusOr<ExecutorInputs> ExecutionManager::ProcessAndCombineContents(
                               ReferTensorBufferAsSpan<int>(*token_ids));
       combined_token_ids.insert(combined_token_ids.end(),
                                 ids_buffer_span.begin(), ids_buffer_span.end());
+      if (UsesPromptConditionedPruning(pruning_config)) {
+        if (prompt_embedding_lookup_manager_ == nullptr) {
+          return absl::FailedPreconditionError(
+              "prompt_conditioned_v1 requires the real FastVLM text embedder, "
+              "but no prompt embedding lookup manager is available.");
+        }
+        if (!cached_text_embeddings.has_value()) {
+          cached_text_embeddings = CachedTextEmbeddings();
+        }
+        if (benchmark_info.has_value()) {
+          RETURN_IF_ERROR(benchmark_info->TimeMarkDelta("prompt_text_embedder"));
+        }
+        RETURN_IF_ERROR(AppendTextTokenEmbeddingsToCache(
+            *prompt_embedding_lookup_manager_, ids_buffer_span,
+            *cached_text_embeddings));
+        if (benchmark_info.has_value()) {
+          RETURN_IF_ERROR(benchmark_info->TimeMarkDelta("prompt_text_embedder"));
+        }
+      }
     } else if (const auto* input_image =
                    std::get_if<InputImage>(&preprocessed_content)) {
       ASSIGN_OR_RETURN(const auto* image_tensor,
@@ -532,14 +618,38 @@ absl::StatusOr<ExecutorInputs> ExecutionManager::ProcessAndCombineContents(
                        resource_manager_->AcquireVisionExecutor());
       ASSIGN_OR_RETURN(auto single_image_data,
                        vision_executor->Encode(*image_tensor));
+      const int max_visual_tokens = session_config.GetMaxVisualTokens();
+      if (max_visual_tokens > 0) {
+        ASSIGN_OR_RETURN(const int original_image_token_num,
+                         GetExecutorVisionTokenCount(single_image_data));
+        if (benchmark_info.has_value()) {
+          RETURN_IF_ERROR(benchmark_info->TimeMarkDelta("vision_token_budget"));
+        }
+        ASSIGN_OR_RETURN(
+            auto pruned_image_data,
+            PruneExecutorVisionData(single_image_data, max_visual_tokens,
+                                    cached_text_embeddings.has_value()
+                                        ? &cached_text_embeddings.value()
+                                        : nullptr,
+                                    *pruning_config));
+        single_image_data = std::move(pruned_image_data.vision_data);
+        if (benchmark_info.has_value()) {
+          RETURN_IF_ERROR(benchmark_info->TimeMarkDelta("vision_token_budget"));
+        }
+        ASSIGN_OR_RETURN(const int pruned_image_token_num,
+                         GetExecutorVisionTokenCount(single_image_data));
+        ABSL_LOG(INFO) << "Applied visual token budget: kept "
+                       << pruned_image_token_num << " of "
+                       << original_image_token_num
+                       << " projected vision tokens.";
+        ABSL_LOG(INFO) << "Visual token pruning decision: "
+                       << pruned_image_data.decision.ToLogString();
+      }
       if (benchmark_info.has_value()) {
         RETURN_IF_ERROR(benchmark_info->TimeMarkDelta("vision_executor"));
       }
-      ASSIGN_OR_RETURN(auto embeddings_ptr,
-                       single_image_data.GetEmbeddingsPtr());
-      const auto& dimensions = TensorBufferDims(*embeddings_ptr);
-      // The last two dimensions are [..., image_token_num, model_dimension].
-      const int image_token_num = dimensions.at(dimensions.size() - 2);
+      ASSIGN_OR_RETURN(const int image_token_num,
+                       GetExecutorVisionTokenCount(single_image_data));
       combined_token_ids.insert(combined_token_ids.end(), image_token_num,
                                 ExecutorVisionData::kSpecialToken);
       all_image_data.push_back(std::move(single_image_data));
@@ -590,9 +700,13 @@ absl::StatusOr<ExecutorInputs> ExecutionManager::ProcessAndCombineContents(
 
   ASSIGN_OR_RETURN(auto token_ids_buffer,
                    tokenizer_->TokenIdsToTensorBuffer(combined_token_ids));
+  ExecutorTextData text_data(std::move(token_ids_buffer));
+  if (cached_text_embeddings.has_value()) {
+    RETURN_IF_ERROR(cached_text_embeddings->Validate());
+    text_data.SetCachedTextEmbeddings(std::move(*cached_text_embeddings));
+  }
 
-  ExecutorInputs inputs(ExecutorTextData(std::move(token_ids_buffer)),
-                        std::move(combined_image_data),
+  ExecutorInputs inputs(std::move(text_data), std::move(combined_image_data),
                         std::move(combined_audio_data));
   return inputs;
 }
@@ -606,14 +720,26 @@ absl::StatusOr<std::unique_ptr<ExecutionManager>> ExecutionManager::Create(
     std::unique_ptr<AudioExecutorSettings> absl_nullable
     audio_executor_settings,
     ::litert::Environment* absl_nullable litert_env) {
-  std::unique_ptr<Sampler> sampler;
+  std::unique_ptr<EmbeddingLookupManager> prompt_embedding_lookup_manager =
+      nullptr;
+  if (model_resources != nullptr) {
+    auto text_embedder_model =
+        model_resources->GetTFLiteModel(ModelType::kTfLiteEmbedder);
+    if (text_embedder_model.ok()) {
+      ASSIGN_OR_RETURN(prompt_embedding_lookup_manager,
+                       EmbeddingLookupManager::Create(
+                           *text_embedder_model,
+                           /*fully_supports_multi_modal=*/false));
+    }
+  }
   ASSIGN_OR_RETURN(
       auto resource_manager,
       ResourceManager::Create(model_resources, std::move(llm_executor),
                               std::move(vision_executor_settings),
                               std::move(audio_executor_settings), litert_env));
-  return absl::WrapUnique(
-      new ExecutionManager(tokenizer, std::move(resource_manager), litert_env));
+  return absl::WrapUnique(new ExecutionManager(
+      tokenizer, std::move(resource_manager),
+      std::move(prompt_embedding_lookup_manager), litert_env));
 }
 
 absl::Status ExecutionManager::WaitUntilDone(TaskId task_id,
@@ -690,8 +816,8 @@ absl::Status ExecutionManager::AddPrefillTask(
 
     RETURN_IF_CANCELLED(cancelled, task_id, callback);
 
-    auto executor_inputs =
-        ProcessAndCombineContents(inputs, session_info->benchmark_info);
+    auto executor_inputs = ProcessAndCombineContents(
+        inputs, session_info->session_config, session_info->benchmark_info);
     if (!executor_inputs.ok()) {
       FinishTaskAndLogErrors(task_id, executor_inputs.status(),
                              std::move(callback));

@@ -31,6 +31,7 @@
 #include "absl/types/span.h"  // from @com_google_absl
 #include "litert/cc/litert_common.h"  // from @litert
 #include "runtime/engine/io_types.h"
+#include "runtime/executor/qualcomm_npu_options.h"
 #include "runtime/executor/vision_executor_utils.h"
 #include "runtime/util/scoped_file.h"
 #if !defined(LITERT_DISABLE_NPU)
@@ -169,14 +170,7 @@ absl::Status VisionLiteRtCompiledModelExecutor::VisionEncoder::Initialize() {
     }
 #if !defined(LITERT_DISABLE_NPU)
     case Backend::NPU: {
-      LITERT_ASSIGN_OR_RETURN(auto qualcomm_options,
-                              qualcomm::QualcommOptions::Create());
-      qualcomm_options.SetLogLevel(qualcomm::QualcommOptions::LogLevel::kInfo);
-      qualcomm_options.SetHtpPerformanceMode(
-          qualcomm::QualcommOptions::HtpPerformanceMode::kDefault);
-      options.AddOpaqueOptions(std::move(qualcomm_options));
-      // TODO: yunandrew - Add support for other NPU backends.
-      options.SetHardwareAccelerators(litert::HwAccelerators::kCpu);
+      LITERT_RETURN_IF_ERROR(ConfigureDefaultQualcommNpuLiteRtOptions(options));
       break;
     }
 #endif  // !defined(LITERT_DISABLE_NPU)
@@ -250,15 +244,7 @@ absl::Status VisionLiteRtCompiledModelExecutor::VisionAdapter::Initialize() {
     }
 #if !defined(LITERT_DISABLE_NPU)
     case Backend::NPU: {
-      LITERT_ASSIGN_OR_RETURN(auto qualcomm_options,
-                              qualcomm::QualcommOptions::Create());
-      qualcomm_options.SetLogLevel(qualcomm::QualcommOptions::LogLevel::kInfo);
-      qualcomm_options.SetHtpPerformanceMode(
-          qualcomm::QualcommOptions::HtpPerformanceMode::kDefault);
-      options.AddOpaqueOptions(std::move(qualcomm_options));
-      // Use CPU accelerator with Qualcomm opaque options so DispatchDelegate
-      // can offload to QNN when supported by the adapter graph.
-      options.SetHardwareAccelerators(litert::HwAccelerators::kCpu);
+      LITERT_RETURN_IF_ERROR(ConfigureDefaultQualcommNpuLiteRtOptions(options));
       break;
     }
 #endif  // !defined(LITERT_DISABLE_NPU)

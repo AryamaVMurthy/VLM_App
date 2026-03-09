@@ -222,6 +222,146 @@ TEST(LlmLiteRtCompiledModelCacheUtilsTest, ClearTensorBufferTest) {
                                          0.0f, 0.0f, 0.0f, 0.0f}));
 }
 
+TEST(LlmLiteRtCompiledModelCacheUtilsTest, UpdateKvCacheFromSlicesDecode) {
+  absl::flat_hash_map<absl::string_view, ::litert::TensorBuffer> kv_cache;
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      kv_cache["kv_cache_k_0"],
+      CopyToTensorBuffer<int16_t>(std::vector<int16_t>(10, 0), {1, 1, 5, 2}));
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      kv_cache["kv_cache_v_0"],
+      CopyToTensorBuffer<int16_t>(std::vector<int16_t>(10, 0), {1, 1, 2, 5}));
+
+  absl::flat_hash_map<absl::string_view, ::litert::TensorBuffer> kv_slices;
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      kv_slices["kv_slice_k_0"],
+      CopyToTensorBuffer<int16_t>({11, 12}, {1, 1, 1, 2}));
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      kv_slices["kv_slice_v_0"],
+      CopyToTensorBuffer<int16_t>({21, 22}, {1, 1, 2, 1}));
+  LITERT_ASSERT_OK_AND_ASSIGN(auto input_pos,
+                              CopyToTensorBuffer<int32_t>({3}, {1}));
+
+  LITERT_ASSERT_OK(UpdateKvCacheFromSlices(&kv_cache, kv_slices, input_pos));
+
+  LITERT_ASSERT_OK_AND_ASSIGN(auto k_data,
+                              CopyFromTensorBuffer<int16_t>(
+                                  kv_cache.at("kv_cache_k_0")));
+  EXPECT_THAT(k_data,
+              testing::ElementsAreArray({0, 0, 0, 0, 0, 0, 11, 12, 0, 0}));
+  LITERT_ASSERT_OK_AND_ASSIGN(auto v_data,
+                              CopyFromTensorBuffer<int16_t>(
+                                  kv_cache.at("kv_cache_v_0")));
+  EXPECT_THAT(v_data,
+              testing::ElementsAreArray({0, 0, 0, 21, 0, 0, 0, 0, 22, 0}));
+}
+
+TEST(LlmLiteRtCompiledModelCacheUtilsTest, UpdateKvCacheFromSlicesPrefill) {
+  absl::flat_hash_map<absl::string_view, ::litert::TensorBuffer> kv_cache;
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      kv_cache["kv_cache_k_0"],
+      CopyToTensorBuffer<int16_t>(std::vector<int16_t>(10, 0), {1, 1, 5, 2}));
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      kv_cache["kv_cache_v_0"],
+      CopyToTensorBuffer<int16_t>(std::vector<int16_t>(10, 0), {1, 1, 2, 5}));
+
+  absl::flat_hash_map<absl::string_view, ::litert::TensorBuffer> kv_slices;
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      kv_slices["kv_slice_k_0"],
+      CopyToTensorBuffer<int16_t>({1, 2, 3, 4}, {1, 1, 2, 2}));
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      kv_slices["kv_slice_v_0"],
+      CopyToTensorBuffer<int16_t>({5, 6, 7, 8}, {1, 1, 2, 2}));
+  LITERT_ASSERT_OK_AND_ASSIGN(auto input_pos,
+                              CopyToTensorBuffer<int32_t>({1, 2}, {2}));
+
+  LITERT_ASSERT_OK(UpdateKvCacheFromSlices(&kv_cache, kv_slices, input_pos));
+
+  LITERT_ASSERT_OK_AND_ASSIGN(auto k_data,
+                              CopyFromTensorBuffer<int16_t>(
+                                  kv_cache.at("kv_cache_k_0")));
+  EXPECT_THAT(k_data,
+              testing::ElementsAreArray({0, 0, 1, 2, 3, 4, 0, 0, 0, 0}));
+  LITERT_ASSERT_OK_AND_ASSIGN(auto v_data,
+                              CopyFromTensorBuffer<int16_t>(
+                                  kv_cache.at("kv_cache_v_0")));
+  EXPECT_THAT(v_data,
+              testing::ElementsAreArray({0, 5, 6, 0, 0, 0, 7, 8, 0, 0}));
+}
+
+TEST(LlmLiteRtCompiledModelCacheUtilsTest,
+     UpdateKvCacheFromSlicesRejectsOverflow) {
+  absl::flat_hash_map<absl::string_view, ::litert::TensorBuffer> kv_cache;
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      kv_cache["kv_cache_k_0"],
+      CopyToTensorBuffer<int16_t>(std::vector<int16_t>(10, 0), {1, 1, 5, 2}));
+
+  absl::flat_hash_map<absl::string_view, ::litert::TensorBuffer> kv_slices;
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      kv_slices["kv_slice_k_0"],
+      CopyToTensorBuffer<int16_t>({1, 2, 3, 4}, {1, 1, 2, 2}));
+  LITERT_ASSERT_OK_AND_ASSIGN(auto input_pos,
+                              CopyToTensorBuffer<int32_t>({4}, {1}));
+
+  auto result = UpdateKvCacheFromSlices(&kv_cache, kv_slices, input_pos);
+  EXPECT_THAT(result, IsError(kLiteRtStatusErrorInvalidArgument));
+  ASSERT_FALSE(result.HasValue());
+  EXPECT_THAT(std::string(result.Error().Message()),
+              testing::HasSubstr("out of range"));
+}
+
+TEST(LlmLiteRtCompiledModelCacheUtilsTest,
+     UpdateKvCacheFromSlicesRejectsUnexpectedTypeMismatch) {
+  absl::flat_hash_map<absl::string_view, ::litert::TensorBuffer> kv_cache;
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      kv_cache["kv_cache_k_0"],
+      CopyToTensorBuffer<float>(std::vector<float>(10, 0.0f), {1, 1, 5, 2}));
+
+  absl::flat_hash_map<absl::string_view, ::litert::TensorBuffer> kv_slices;
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      kv_slices["kv_slice_k_0"],
+      CopyToTensorBuffer<int16_t>({1, 2, 3, 4}, {1, 1, 2, 2}));
+  LITERT_ASSERT_OK_AND_ASSIGN(auto input_pos,
+                              CopyToTensorBuffer<int32_t>({1}, {1}));
+
+  auto result = UpdateKvCacheFromSlices(&kv_cache, kv_slices, input_pos);
+  EXPECT_THAT(result, IsError(kLiteRtStatusErrorInvalidArgument));
+  ASSERT_FALSE(result.HasValue());
+  EXPECT_THAT(std::string(result.Error().Message()),
+              testing::HasSubstr("element type mismatch"));
+}
+
+TEST(LlmLiteRtCompiledModelCacheUtilsTest,
+     UpdateKvCacheFromSlicesSkipsKnownUnusedTypeMismatches) {
+  absl::flat_hash_map<absl::string_view, ::litert::TensorBuffer> kv_cache;
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      kv_cache["kv_cache_k_23"],
+      CopyToTensorBuffer<float>(std::vector<float>(10, 0.0f), {1, 1, 5, 2}));
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      kv_cache["kv_cache_v_23"],
+      CopyToTensorBuffer<float>(std::vector<float>(10, 0.0f), {1, 1, 2, 5}));
+
+  absl::flat_hash_map<absl::string_view, ::litert::TensorBuffer> kv_slices;
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      kv_slices["kv_slice_k_23"],
+      CopyToTensorBuffer<int16_t>({1, 2, 3, 4}, {1, 1, 2, 2}));
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      kv_slices["kv_slice_v_23"],
+      CopyToTensorBuffer<int16_t>({5, 6, 7, 8}, {1, 1, 2, 2}));
+  LITERT_ASSERT_OK_AND_ASSIGN(auto input_pos,
+                              CopyToTensorBuffer<int32_t>({1}, {1}));
+
+  LITERT_ASSERT_OK(UpdateKvCacheFromSlices(&kv_cache, kv_slices, input_pos));
+
+  LITERT_ASSERT_OK_AND_ASSIGN(auto k_data,
+                              CopyFromTensorBuffer<float>(
+                                  kv_cache.at("kv_cache_k_23")));
+  EXPECT_THAT(k_data, testing::Each(0.0f));
+  LITERT_ASSERT_OK_AND_ASSIGN(auto v_data,
+                              CopyFromTensorBuffer<float>(
+                                  kv_cache.at("kv_cache_v_23")));
+  EXPECT_THAT(v_data, testing::Each(0.0f));
+}
+
 TEST(LlmLiteRtCompiledModelCacheUtilsTest, IsKVCacheTensorTest) {
   EXPECT_TRUE(IsKVCacheTensor("kv_cache_0"));
   EXPECT_TRUE(IsKVCacheTensor("k_cache_0"));

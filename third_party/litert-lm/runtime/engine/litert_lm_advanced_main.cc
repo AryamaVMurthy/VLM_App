@@ -121,6 +121,8 @@ absl::Status MainHelper(int argc, char** argv) {
            "[--expected_output=<expected_output>] [--backend=<cpu|gpu|npu>] "
            "[--log_sink_file=<log_sink_file>] "
            "[--max_num_tokens=<max_num_tokens>] "
+           "[--max_visual_tokens=<max_visual_tokens>] "
+           "[--visual_token_pruning_strategy=<uniform|prompt_conditioned_v1>] "
            "[--prefill_batch_sizes=<size1>[,<size2>,...]]"
            "[--prefill_chunk_size=<prefill_chunk_size>] "
            "[--vision_backend=<cpu|gpu>] [--audio_backend=<cpu|gpu>] "
@@ -173,6 +175,9 @@ absl::Status MainHelper(int argc, char** argv) {
   settings.max_num_tokens = absl::GetFlag(FLAGS_max_num_tokens);
   settings.max_output_tokens = absl::GetFlag(FLAGS_max_output_tokens);
   settings.max_num_images = absl::GetFlag(FLAGS_max_num_images);
+  settings.max_visual_tokens = absl::GetFlag(FLAGS_max_visual_tokens);
+  settings.visual_token_pruning_strategy =
+      absl::GetFlag(FLAGS_visual_token_pruning_strategy);
   ASSIGN_OR_RETURN(
       settings.prefill_batch_sizes,
       ParsePrefillBatchSizes(absl::GetFlag(FLAGS_prefill_batch_sizes)));

@@ -116,6 +116,14 @@ cc_test(
 )
 
 cc_library(
+    name = "litert_lm_settings",
+    hdrs = ["litert_lm_settings.h"],
+    deps = [
+        "@com_google_absl//absl/base:log_severity",
+    ],
+)
+
+cc_library(
     name = "litert_lm_lib",
     srcs = ["litert_lm_lib.cc"],
     hdrs = ["litert_lm_lib.h"],
@@ -125,6 +133,8 @@ cc_library(
         ":engine_interface",
         ":engine_settings",
         ":io_types",
+        ":litert_lm_settings",
+        ":litert_lm_settings_util",
         "@com_google_absl//absl/base:log_severity",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/log:absl_check",
@@ -161,6 +171,33 @@ cc_library(
         ],
         "//conditions:default": [],
     }),
+)
+
+cc_library(
+    name = "litert_lm_settings_util",
+    srcs = ["litert_lm_settings_util.cc"],
+    hdrs = ["litert_lm_settings_util.h"],
+    deps = [
+        ":engine_settings",
+        ":io_types",
+        ":litert_lm_settings",
+        "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/status:statusor",
+        "//runtime/components/constrained_decoding:constraint_provider_config",
+        "//runtime/components/constrained_decoding:llg_constraint_config",
+    ],
+)
+
+cc_test(
+    name = "litert_lm_settings_util_test",
+    srcs = ["litert_lm_settings_util_test.cc"],
+    deps = [
+        "@com_google_googletest//:gtest_main",
+        ":litert_lm_settings",
+        ":litert_lm_settings_util",
+        "//runtime/components/constrained_decoding:constraint_provider_config",
+        "//runtime/components/constrained_decoding:llg_constraint_config",
+    ],
 )
 
 cc_library(
@@ -293,6 +330,7 @@ cc_library(
         "//runtime/proto:llm_model_type_cc_proto",
         "//runtime/proto:sampler_params_cc_proto",
         "//runtime/proto:token_cc_proto",
+        "//runtime/util:executor_data_util",
         "//runtime/util:litert_status_util",
         "//runtime/util:model_type_utils",
         "//runtime/util:scoped_file",

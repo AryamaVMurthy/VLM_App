@@ -20,6 +20,7 @@
 #include <optional>
 #include <ostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/base/nullability.h"  // from @com_google_absl
@@ -235,6 +236,23 @@ class SessionConfig {
     max_output_tokens_ = max_output_tokens;
   }
 
+  // The maximum number of visual tokens to keep after the vision adapter
+  // output is materialized on host memory. A value of 0 disables visual token
+  // pruning.
+  int GetMaxVisualTokens() const { return max_visual_tokens_; }
+  void SetMaxVisualTokens(int max_visual_tokens) {
+    max_visual_tokens_ = max_visual_tokens;
+  }
+
+  // The pruning strategy applied when MaxVisualTokens is enabled.
+  const std::string& GetVisualTokenPruningStrategy() const {
+    return visual_token_pruning_strategy_;
+  }
+  void SetVisualTokenPruningStrategy(
+      std::string visual_token_pruning_strategy) {
+    visual_token_pruning_strategy_ = std::move(visual_token_pruning_strategy);
+  }
+
  private:
   // Private constructor for the SessionConfig. The user should use the
   // CreateDefault() method to create a SessionConfig.
@@ -289,6 +307,13 @@ class SessionConfig {
   // tokens (input + output) stored in the KV cache over the lifetime of a
   // session.
   int max_output_tokens_ = std::numeric_limits<int>::max();
+
+  // The maximum number of visual tokens to keep after the vision adapter
+  // output. 0 disables post-projection visual token pruning.
+  int max_visual_tokens_ = 0;
+
+  // The strategy used for post-projection visual token pruning.
+  std::string visual_token_pruning_strategy_ = "uniform";
 };
 
 std::ostream& operator<<(std::ostream& os, const SessionConfig& config);
