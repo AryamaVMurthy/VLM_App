@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 #include "absl/container/flat_hash_map.h"  // from @com_google_absl
 #include "absl/status/status.h"  // from @com_google_absl
@@ -24,6 +25,7 @@
 #include "absl/types/span.h"  // from @com_google_absl
 #include "litert/cc/litert_expected.h"  // from @litert
 #include "litert/cc/litert_tensor_buffer.h"  // from @litert
+#include "runtime/executor/llm_executor_io_types.h"
 
 namespace litert::lm {
 
@@ -97,6 +99,15 @@ absl::Status ExpandBuffer(const uint8_t* src_data,
 
 // Returns true if the tensor name is a KV cache tensor.
 bool IsKVCacheTensor(absl::string_view tensor_name);
+
+// Copies a handoff KV cache tensor into the destination buffer. If the tensor
+// types already match, the contents are copied verbatim. If the source tensor
+// is quantized int16 and the destination expects float32, explicit
+// dequantization is applied using the provided quantization parameters.
+absl::Status CopyHandoffKvCacheBuffer(
+    const ::litert::TensorBuffer& source_buffer,
+    const std::optional<KvCacheQuantizationParams>& quantization_params,
+    ::litert::TensorBuffer& destination_buffer, absl::string_view tensor_name);
 
 }  // namespace litert::lm
 #endif  // THIRD_PARTY_ODML_LITERT_LM_RUNTIME_EXECUTOR_LLM_LITERT_COMPILED_MODEL_CACHE_UTILS_H_

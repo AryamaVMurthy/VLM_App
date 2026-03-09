@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -24,6 +25,7 @@
 #include "absl/status/status.h"  // from @com_google_absl
 #include "absl/strings/match.h"  // from @com_google_absl
 #include "absl/strings/str_cat.h"  // from @com_google_absl
+#include "absl/strings/str_join.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "absl/types/span.h"  // from @com_google_absl
 #include "litert/cc/litert_element_type.h"  // from @litert
@@ -49,6 +51,98 @@ constexpr absl::string_view kKvCacheVRoot = "kv_cache_v_";
 bool IsKnownUnusedTypeMismatchedKvCache(absl::string_view cache_name) {
   return cache_name == "kv_cache_k_23" || cache_name == "kv_cache_v_23" ||
          cache_name == "kv_cache_k_25" || cache_name == "kv_cache_v_25";
+}
+
+absl::Status ValidateMatchingTensorLayouts(
+    const TensorBuffer& source_buffer, const TensorBuffer& destination_buffer,
+    absl::string_view tensor_name) {
+  LITERT_ASSIGN_OR_RETURN(auto source_type, source_buffer.TensorType());
+  LITERT_ASSIGN_OR_RETURN(auto destination_type, destination_buffer.TensorType());
+  if (source_type.Layout().Dimensions() != destination_type.Layout().Dimensions()) {
+    return absl::InternalError(
+        absl::StrCat("Tensor shape mismatch during handoff import for ",
+                     tensor_name, ": source_dims=[",
+                     absl::StrJoin(source_type.Layout().Dimensions(), ","),
+                     "] destination_dims=[",
+                     absl::StrJoin(destination_type.Layout().Dimensions(), ","),
+                     "]"));
+  }
+  return absl::OkStatus();
+}
+
+absl::Status CopyMatchingTensorBufferContents(
+    const TensorBuffer& source_buffer, TensorBuffer& destination_buffer,
+    absl::string_view tensor_name) {
+  RETURN_IF_ERROR(ValidateMatchingTensorLayouts(source_buffer,
+                                                destination_buffer,
+                                                tensor_name));
+  LITERT_ASSIGN_OR_RETURN(auto source_size, source_buffer.PackedSize());
+  LITERT_ASSIGN_OR_RETURN(auto destination_size, destination_buffer.PackedSize());
+  if (source_size != destination_size) {
+    return absl::InternalError(
+        absl::StrCat("Tensor packed size mismatch during handoff import for ",
+                     tensor_name, "."));
+  }
+  LITERT_ASSIGN_OR_RETURN(
+      auto source_lock,
+      ::litert::TensorBufferScopedLock::Create(
+          *const_cast<TensorBuffer*>(&source_buffer),
+          TensorBuffer::LockMode::kRead));
+  LITERT_ASSIGN_OR_RETURN(
+      auto destination_lock,
+      ::litert::TensorBufferScopedLock::Create(destination_buffer,
+                                               TensorBuffer::LockMode::kWrite));
+  std::memcpy(destination_lock.second, source_lock.second, source_size);
+  return absl::OkStatus();
+}
+
+absl::Status DequantizeInt16ToFloat32(
+    const TensorBuffer& source_buffer,
+    const KvCacheQuantizationParams& quantization_params,
+    TensorBuffer& destination_buffer, absl::string_view tensor_name) {
+  RETURN_IF_ERROR(ValidateMatchingTensorLayouts(source_buffer,
+                                                destination_buffer,
+                                                tensor_name));
+  RETURN_IF_ERROR(quantization_params.Validate(tensor_name));
+
+  LITERT_ASSIGN_OR_RETURN(auto source_type, source_buffer.TensorType());
+  LITERT_ASSIGN_OR_RETURN(auto destination_type, destination_buffer.TensorType());
+  if (source_type.ElementType() != ::litert::ElementType::Int16 ||
+      destination_type.ElementType() != ::litert::ElementType::Float32) {
+    return absl::InternalError(absl::StrCat(
+        "Unsupported handoff type conversion for ", tensor_name, ": source=",
+        static_cast<int>(source_type.ElementType()), " destination=",
+        static_cast<int>(destination_type.ElementType()), "."));
+  }
+  if (quantization_params.source_element_type != source_type.ElementType()) {
+    return absl::InternalError(absl::StrCat(
+        "Quantization metadata source element type mismatch for ",
+        tensor_name, "."));
+  }
+
+  LITERT_ASSIGN_OR_RETURN(auto num_elements, source_type.Layout().NumElements());
+  LITERT_ASSIGN_OR_RETURN(
+      auto source_lock,
+      ::litert::TensorBufferScopedLock::Create(
+          *const_cast<TensorBuffer*>(&source_buffer),
+          TensorBuffer::LockMode::kRead));
+  LITERT_ASSIGN_OR_RETURN(
+      auto destination_lock,
+      ::litert::TensorBufferScopedLock::Create(destination_buffer,
+                                               TensorBuffer::LockMode::kWrite));
+  const auto* source_data = static_cast<const int16_t*>(source_lock.second);
+  auto* destination_data = static_cast<float*>(destination_lock.second);
+  for (int64_t i = 0; i < num_elements; ++i) {
+    destination_data[i] =
+        (static_cast<float>(source_data[i]) -
+         static_cast<float>(quantization_params.zero_point)) *
+        quantization_params.scale;
+  }
+  ABSL_LOG(INFO) << "Dequantized handoff tensor '" << tensor_name
+                 << "' from Int16 to Float32 using scale="
+                 << quantization_params.scale
+                 << " zero_point=" << quantization_params.zero_point << ".";
+  return absl::OkStatus();
 }
 
 Expected<int> GetKvCacheUpdateStartPosition(const TensorBuffer& input_pos) {
@@ -180,6 +274,33 @@ Expected<void> CopyKvCacheSlice(TensorBuffer& dst_buffer,
 }
 
 }  // namespace
+
+absl::Status CopyHandoffKvCacheBuffer(
+    const ::litert::TensorBuffer& source_buffer,
+    const std::optional<KvCacheQuantizationParams>& quantization_params,
+    ::litert::TensorBuffer& destination_buffer, absl::string_view tensor_name) {
+  if (source_buffer.Get() == destination_buffer.Get()) {
+    ABSL_LOG(INFO) << "Skipping aliased handoff copy for '" << tensor_name
+                   << "' because the CPU decode path uses a single-buffer KV "
+                      "cache mirror.";
+    return absl::OkStatus();
+  }
+  LITERT_ASSIGN_OR_RETURN(auto source_type, source_buffer.TensorType());
+  LITERT_ASSIGN_OR_RETURN(auto destination_type, destination_buffer.TensorType());
+  if (source_type.ElementType() == destination_type.ElementType()) {
+    return CopyMatchingTensorBufferContents(source_buffer, destination_buffer,
+                                           tensor_name);
+  }
+  if (!quantization_params.has_value()) {
+    return absl::InternalError(absl::StrCat(
+        "Tensor element type mismatch during handoff import for ", tensor_name,
+        ": source=", static_cast<int>(source_type.ElementType()),
+        " destination=", static_cast<int>(destination_type.ElementType()),
+        ". Missing quantization metadata for explicit conversion."));
+  }
+  return DequantizeInt16ToFloat32(source_buffer, *quantization_params,
+                                  destination_buffer, tensor_name);
+}
 
 ::litert::Expected<bool> ShouldDeleteKVCacheTokens(int current_step,
                                                    int start_position,

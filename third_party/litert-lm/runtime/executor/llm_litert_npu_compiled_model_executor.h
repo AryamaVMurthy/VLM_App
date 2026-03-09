@@ -109,6 +109,10 @@ class LlmLiteRtNpuCompiledModelExecutor : public LlmExecutor {
   absl::StatusOr<LlmExecutorSettings> GetExecutorSettings() const override {
     return executor_settings_;
   };
+
+  absl::StatusOr<PrefillDecodeHandoff> ExportPrefillDecodeHandoff(
+      int last_prefill_token_id) const override;
+
   // Prints the latency stats for the executor.  Intended to be used for
   // profiling.
   LatencyStats GetLatencyStats() const;
@@ -195,6 +199,8 @@ class LlmLiteRtNpuCompiledModelExecutor : public LlmExecutor {
       InferenceContext rope_context, ::litert::CompiledModel llm_compiled_model,
       InferenceContext llm_inference_context,
       InferenceContext cache_update_inference_context,
+      absl::flat_hash_map<std::string, KvCacheQuantizationParams>
+          handoff_kv_cache_quantization,
       SortedPrefillSignatureMap prefill_signature_map,
       std::optional<std::unique_ptr<EmbeddingLookupManager>>
           embedding_lookup_manager,
@@ -211,6 +217,8 @@ class LlmLiteRtNpuCompiledModelExecutor : public LlmExecutor {
         llm_inference_context_(std::move(llm_inference_context)),
         cache_update_inference_context_(
             std::move(cache_update_inference_context)),
+        handoff_kv_cache_quantization_(
+            std::move(handoff_kv_cache_quantization)),
         prefill_signature_map_(std::move(prefill_signature_map)) {
     if (embedder_per_layer_context_.has_value()) {
       latency_stats_.prefill_embedder_per_layer_inference_latency_us = 0;
@@ -374,6 +382,8 @@ class LlmLiteRtNpuCompiledModelExecutor : public LlmExecutor {
   std::optional<EmbedderPerLayerContext> embedder_per_layer_context_;
   InferenceContext llm_inference_context_;
   InferenceContext cache_update_inference_context_;
+  absl::flat_hash_map<std::string, KvCacheQuantizationParams>
+      handoff_kv_cache_quantization_;
   SortedPrefillSignatureMap prefill_signature_map_;
   const ExecutorTextData::CachedTextEmbeddings*
       current_prefill_cached_text_embeddings_ = nullptr;

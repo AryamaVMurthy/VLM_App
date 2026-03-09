@@ -114,6 +114,27 @@ class LlmExecutorBase {
                      ExecutorBackendName()));
   };
 
+  // Exports a fully-prefilled state that can be imported by a decode executor
+  // on another backend. Backends that do not support explicit handoff must
+  // fail with an unimplemented error rather than silently degrading.
+  virtual absl::StatusOr<PrefillDecodeHandoff> ExportPrefillDecodeHandoff(
+      int last_prefill_token_id) const {
+    return absl::UnimplementedError(
+        absl::StrCat("Prefill/decode handoff export not implemented for "
+                     "backend: ",
+                     ExecutorBackendName()));
+  }
+
+  // Imports a fully-prefilled state that was previously exported by
+  // ExportPrefillDecodeHandoff().
+  virtual absl::Status ImportPrefillDecodeHandoff(
+      const PrefillDecodeHandoff& handoff) {
+    return absl::UnimplementedError(
+        absl::StrCat("Prefill/decode handoff import not implemented for "
+                     "backend: ",
+                     ExecutorBackendName()));
+  }
+
   // ------------Vision APIs------------:
   // This function will populate the GPU tensors with the vision embeddings and
   // vision per layer embeddings. This should only be used before the

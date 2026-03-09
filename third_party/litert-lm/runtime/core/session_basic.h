@@ -120,6 +120,20 @@ class SessionBasic : public Engine::Session {
   absl::StatusOr<Responses> RunDecode(
       const DecodeConfig& decode_config) override;
 
+  // Exports the fully-prefilled executor state so decode can continue on a
+  // separate session/backend. This is intended for the explicit CPU-decode /
+  // NPU-prefill overlap path.
+  absl::StatusOr<PrefillDecodeHandoff> ExportPrefillDecodeHandoff();
+
+  // Imports a previously exported prefill state into this session and marks
+  // the session as ready for decode.
+  absl::Status ImportPrefillDecodeHandoff(
+      const PrefillDecodeHandoff& handoff);
+
+  // Resets the underlying executor and clears session-local state so the same
+  // session object can be reused by the overlap workers.
+  absl::Status ResetForReuse();
+
   absl::StatusOr<std::unique_ptr<Engine::Session::TaskController>>
   RunDecodeAsync(
       absl::AnyInvocable<void(absl::StatusOr<Responses>)> callback) override;
@@ -184,6 +198,8 @@ class SessionBasic : public Engine::Session {
       const std::vector<InputData>& preprocessed_contents,
       bool wait_for_completion);
 
+  absl::Status FinalizeDecodePromptIfNeeded();
+
   // The internal functions to decode the input prompt. It is for convenience to
   // wrap it with lambda function for scheduling.
   absl::StatusOr<Responses> DecodeInternal(const DecodeConfig& decode_config);
@@ -241,6 +257,7 @@ class SessionBasic : public Engine::Session {
   // `RunPrefill` or `RunDecode` is called multiple times.
   enum class SessionState : int { kFresh, kPrefilled, kDecoded };
   SessionState session_state_ = SessionState::kFresh;
+  bool decode_prompt_finalized_ = false;
 
   // The set of executors that are already existed in the system. This is used
   // to avoid creating multiple sessions for the same executor.

@@ -362,6 +362,62 @@ TEST(LlmLiteRtCompiledModelCacheUtilsTest,
   EXPECT_THAT(v_data, testing::Each(0.0f));
 }
 
+TEST(LlmLiteRtCompiledModelCacheUtilsTest,
+     CopyHandoffKvCacheBufferDequantizesInt16ToFloat32) {
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto source_buffer,
+      CopyToTensorBuffer<int16_t>({2, 6, 10, 14}, {2, 2}));
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto destination_buffer,
+      CopyToTensorBuffer<float>(std::vector<float>(4, 0.0f), {2, 2}));
+
+  ASSERT_OK(CopyHandoffKvCacheBuffer(
+      source_buffer,
+      KvCacheQuantizationParams{
+          .source_element_type = ElementType::Int16,
+          .scale = 0.25f,
+          .zero_point = 2,
+      },
+      destination_buffer, "kv_cache_k_7"));
+
+  LITERT_ASSERT_OK_AND_ASSIGN(auto result,
+                              CopyFromTensorBuffer<float>(destination_buffer));
+  EXPECT_THAT(result,
+              testing::ElementsAre(0.0f, 1.0f, 2.0f, 3.0f));
+}
+
+TEST(LlmLiteRtCompiledModelCacheUtilsTest,
+     CopyHandoffKvCacheBufferRejectsTypeMismatchWithoutQuantizationMetadata) {
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto source_buffer,
+      CopyToTensorBuffer<int16_t>({2, 6, 10, 14}, {2, 2}));
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto destination_buffer,
+      CopyToTensorBuffer<float>(std::vector<float>(4, 0.0f), {2, 2}));
+
+  auto status = CopyHandoffKvCacheBuffer(
+      source_buffer, std::nullopt, destination_buffer, "kv_cache_k_7");
+  EXPECT_EQ(status.code(), absl::StatusCode::kInternal);
+  EXPECT_THAT(std::string(status.message()),
+              testing::HasSubstr("quantization metadata"));
+}
+
+TEST(LlmLiteRtCompiledModelCacheUtilsTest,
+     CopyHandoffKvCacheBufferAllowsAliasedSingleBufferMirror) {
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto source_buffer,
+      CopyToTensorBuffer<float>({1.0f, 2.0f, 3.0f, 4.0f}, {2, 2}));
+  LITERT_ASSERT_OK_AND_ASSIGN(auto aliased_destination,
+                              source_buffer.Duplicate());
+
+  ASSERT_OK(CopyHandoffKvCacheBuffer(source_buffer, std::nullopt,
+                                     aliased_destination, "kv_cache_k_7"));
+
+  LITERT_ASSERT_OK_AND_ASSIGN(auto result,
+                              CopyFromTensorBuffer<float>(source_buffer));
+  EXPECT_THAT(result, testing::ElementsAre(1.0f, 2.0f, 3.0f, 4.0f));
+}
+
 TEST(LlmLiteRtCompiledModelCacheUtilsTest, IsKVCacheTensorTest) {
   EXPECT_TRUE(IsKVCacheTensor("kv_cache_0"));
   EXPECT_TRUE(IsKVCacheTensor("k_cache_0"));

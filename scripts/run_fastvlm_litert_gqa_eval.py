@@ -37,7 +37,7 @@ DEFAULT_DEVICE_IMAGE_PATH = f"{DEFAULT_DEVICE_DIR}/image.jpg"
 DEFAULT_VISUAL_TOKEN_PRUNING_STRATEGY = "prompt_conditioned_v1"
 DEFAULT_MAX_OUTPUT_TOKENS = 12
 DEFAULT_MAX_VISUAL_TOKENS = 96
-DEFAULT_GQA_SHORT_ANSWER_REGEX = r" ?Answer: [A-Za-z0-9]+(?: [A-Za-z0-9]+)?"
+DEFAULT_GQA_SHORT_ANSWER_REGEX = ""
 
 
 @dataclass(frozen=True)
@@ -75,7 +75,7 @@ def load_gqa_questions(path: Path) -> list[GQASample]:
 
 
 def gqa_prompt(question: str) -> str:
-    return f"Question: {question}\nRespond exactly as: Answer: <one or two words>."
+    return f"Question: {question}\nAnswer with one or two words."
 
 
 def build_runner_command(
@@ -100,8 +100,6 @@ def build_runner_command(
         prompt,
         "--max-output-tokens",
         str(max_output_tokens),
-        "--constraint-regex",
-        constraint_regex,
         "--max-visual-tokens",
         str(max_visual_tokens),
         "--visual-token-pruning-strategy",
@@ -117,6 +115,8 @@ def build_runner_command(
         "--device-dir",
         device_dir,
     ]
+    if constraint_regex:
+        command.extend(["--constraint-regex", constraint_regex])
     if image_path is not None:
         command.extend(["--image", str(image_path)])
     return command

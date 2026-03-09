@@ -210,6 +210,51 @@ cc_library(
     alwayslink = 1,
 )
 
+cc_library(
+    name = "overlap_scheduler",
+    srcs = ["overlap_scheduler.cc"],
+    hdrs = ["overlap_scheduler.h"],
+    deps = [
+        "@com_google_absl//absl/time",
+    ],
+)
+
+cc_test(
+    name = "overlap_scheduler_test",
+    srcs = ["overlap_scheduler_test.cc"],
+    deps = [
+        ":overlap_scheduler",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+cc_library(
+    name = "request_preparation_queue",
+    srcs = ["request_preparation_queue.cc"],
+    hdrs = ["request_preparation_queue.h"],
+    deps = [
+        ":io_types",
+        "@com_google_absl//absl/functional:any_invocable",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+cc_test(
+    name = "request_preparation_queue_test",
+    srcs = ["request_preparation_queue_test.cc"],
+    deps = [
+        ":request_preparation_queue",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
 cc_binary(
     name = "litert_lm_main",
     srcs = ["litert_lm_main.cc"],
@@ -307,6 +352,65 @@ cc_binary(
         "//conditions:default": [
         ],
     }),
+)
+
+cc_binary(
+    name = "litert_lm_overlap_main",
+    srcs = ["litert_lm_overlap_main.cc"],
+    additional_linker_inputs = select({
+        "@platforms//os:windows": [
+            "@litert//litert/c:windows_exported_symbols.def",
+        ],
+        "@platforms//os:linux": [":litert_lm_main.exported_symbols"],
+        "//conditions:default": [],
+    }),
+    linkopts = select({
+        "@litert//litert:litert_link_capi_so": [],
+        "@platforms//os:ios": ["-Wl,-exported_symbol,_LiteRt*"],
+        "@platforms//os:macos": ["-Wl,-exported_symbol,_LiteRt*"],
+        "@platforms//os:windows": [
+            "/DEF:$(location @litert//litert/c:windows_exported_symbols.def)",
+        ],
+        "@platforms//os:linux": ["-Wl,--dynamic-list=$(location :litert_lm_main.exported_symbols)"],
+        "//conditions:default": ["-Wl,--export-dynamic-symbol=LiteRt*"],
+    }) + select({
+        "@platforms//os:android": ["-lEGL", "-lGLESv3"],
+        "//conditions:default": [],
+    }),
+    deps = [
+        ":engine_settings",
+        ":io_types",
+        ":litert_lm_settings",
+        ":litert_lm_settings_util",
+        ":overlap_scheduler",
+        ":request_preparation_queue",
+        "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/flags:parse",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/log:globals",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_absl//absl/time",
+        "@nlohmann_json//:json",
+        "//runtime/components:tokenizer",
+        "//runtime/components/constrained_decoding:constraint",
+        "//runtime/components/constrained_decoding:constraint_provider_factory",
+        "//runtime/components/constrained_decoding:llg_constraint_config",
+        "//runtime/components/embedding_lookup:embedding_lookup_manager",
+        "//runtime/components/preprocessor:stb_image_preprocessor",
+        "//runtime/core:session_basic",
+        "//runtime/executor:litert_compiled_model_executor_utils",
+        "//runtime/executor:llm_executor",
+        "//runtime/executor:llm_litert_compiled_model_executor_factory",
+        "//runtime/executor:magic_number_configs_helper",
+        "//runtime/executor:vision_executor",
+        "//runtime/executor:vision_litert_compiled_model_executor",
+        "//runtime/framework:threadpool",
+        "//runtime/util:litert_status_util",
+    ],
 )
 
 cc_library(

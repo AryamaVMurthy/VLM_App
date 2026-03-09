@@ -218,6 +218,7 @@ cc_library(
     srcs = ["llm_litert_compiled_model_cache_utils.cc"],
     hdrs = ["llm_litert_compiled_model_cache_utils.h"],
     deps = [
+        ":llm_executor_io_types",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
@@ -244,6 +245,7 @@ cc_test(
     name = "llm_litert_compiled_model_cache_utils_test",
     srcs = ["llm_litert_compiled_model_cache_utils_test.cc"],
     deps = [
+        ":llm_executor_io_types",
         ":llm_litert_compiled_model_cache_utils",
         "@com_google_googletest//:gtest_main",
         "@com_google_absl//absl/container:flat_hash_map",
@@ -563,6 +565,7 @@ cc_library(
             "@litert//litert/cc:litert_element_type",
             "@litert//litert/cc:litert_environment",
             "@litert//litert/cc:litert_expected",
+            "@litert//litert/cc/internal:litert_extended_model",
             "@litert//litert/cc:litert_layout",
             "@litert//litert/cc:litert_macros",
             "@litert//litert/cc:litert_model",

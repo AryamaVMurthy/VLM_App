@@ -50,6 +50,7 @@
 #include "litert/cc/litert_options.h"  // from @litert
 #include "litert/cc/litert_ranked_tensor_type.h"  // from @litert
 #include "litert/cc/litert_tensor_buffer.h"  // from @litert
+#include "litert/cc/internal/litert_extended_model.h"  // from @litert
 #include "litert/cc/options/litert_qualcomm_options.h"  // from @litert
 #include "runtime/components/embedding_lookup/embedding_lookup_manager.h"
 #include "runtime/components/model_resources.h"
@@ -84,6 +85,96 @@ constexpr char cache_v17[] = "kv_cache_v_17";
 
 constexpr absl::string_view kv_cache_k_root_name = "kv_cache_k_";
 constexpr absl::string_view kv_cache_v_root_name = "kv_cache_v_";
+
+absl::StatusOr<TensorBuffer> CloneTensorBufferToHost(
+    const TensorBuffer& source_buffer) {
+  LITERT_ASSIGN_OR_RETURN(auto tensor_type, source_buffer.TensorType());
+  LITERT_ASSIGN_OR_RETURN(auto packed_size, source_buffer.PackedSize());
+  LITERT_ASSIGN_OR_RETURN(
+      auto host_buffer,
+      TensorBuffer::CreateManagedHostMemory(tensor_type, packed_size));
+  LITERT_ASSIGN_OR_RETURN(
+      auto source_lock,
+      TensorBufferScopedLock::Create(
+          *const_cast<TensorBuffer*>(&source_buffer),
+          TensorBuffer::LockMode::kRead));
+  LITERT_ASSIGN_OR_RETURN(
+      auto host_lock,
+      TensorBufferScopedLock::Create(host_buffer,
+                                     TensorBuffer::LockMode::kWrite));
+  std::memcpy(host_lock.second, source_lock.second, packed_size);
+  return host_buffer;
+}
+
+absl::StatusOr<absl::flat_hash_map<std::string, KvCacheQuantizationParams>>
+ExtractPrefillHandoffQuantizationParams(const ::litert::Model& model,
+                                        absl::string_view signature_key) {
+  ::litert::ExtendedModel extended_model =
+      ::litert::ExtendedModel::CreateFromNonOwnedHandle(model.Get());
+  auto signatures = extended_model.GetSignatures();
+  if (!signatures) {
+    return litert::ErrorStatusBuilder(signatures.Error())
+           << "Failed to inspect transformer signatures for handoff "
+              "quantization metadata.";
+  }
+  for (const auto& signature : *signatures) {
+    if (signature.Key() != signature_key) {
+      continue;
+    }
+
+    absl::flat_hash_map<std::string, KvCacheQuantizationParams>
+        quantization_params;
+    for (const auto input_name : signature.InputNames()) {
+      if (!IsKVCacheTensor(input_name)) {
+        continue;
+      }
+      auto simple_tensor = signature.InputTensor(input_name);
+      if (!simple_tensor) {
+        return litert::ErrorStatusBuilder(simple_tensor.Error())
+               << "Failed to inspect tensor '" << input_name
+               << "' while extracting handoff quantization metadata.";
+      }
+      const auto* tensor =
+          dynamic_cast<const ::litert::Tensor*>(&*simple_tensor);
+      RET_CHECK(tensor != nullptr)
+          << "Expected extended tensor metadata for '" << input_name << "'.";
+      if (!tensor->HasQuantization()) {
+        continue;
+      }
+      RET_CHECK_EQ(tensor->QTypeId(), kLiteRtQuantizationPerTensor)
+          << "Only per-tensor KV cache quantization is supported for handoff.";
+      const auto quantization = tensor->PerTensorQuantization();
+      quantization_params.emplace(
+          std::string(input_name),
+          KvCacheQuantizationParams{
+              .source_element_type = tensor->ElementType(),
+              .scale = quantization.scale,
+              .zero_point = quantization.zero_point,
+          });
+    }
+    return quantization_params;
+  }
+
+  return absl::NotFoundError(
+      absl::StrCat("Prefill signature not found for handoff quantization: ",
+                   signature_key));
+}
+
+absl::StatusOr<std::pair<std::vector<int>, int>> ExportSingleCandidateTokens(
+    const ProcessedTokens& processed_tokens, int current_step) {
+  const auto token_candidates = processed_tokens.GetCopyOfTokens();
+  RET_CHECK_EQ(token_candidates.size(), 1)
+      << "Prefill/decode handoff only supports a single decode candidate.";
+  RET_CHECK_EQ(token_candidates[0].size(), current_step)
+      << "Processed token count does not match current step.";
+  RET_CHECK_GT(current_step, 0)
+      << "Cannot export handoff for an empty prefill state.";
+
+  std::vector<int> processed = token_candidates[0];
+  const int pending_token_id = processed.back();
+  processed.pop_back();
+  return std::make_pair(std::move(processed), pending_token_id);
+}
 
 // Signature names for the embedder.
 struct EmbedderSignatures {
@@ -1633,6 +1724,40 @@ absl::StatusOr<int> LlmLiteRtNpuCompiledModelExecutor::GetVocabSize() {
   return logits_tensor_type.Layout().Dimensions()[2];
 }
 
+absl::StatusOr<PrefillDecodeHandoff>
+LlmLiteRtNpuCompiledModelExecutor::ExportPrefillDecodeHandoff(
+    int last_prefill_token_id) const {
+  RET_CHECK_GT(current_step_, 0)
+      << "Cannot export prefill/decode handoff before prefill.";
+  ASSIGN_OR_RETURN(auto processed_and_pending,
+                   ExportSingleCandidateTokens(processed_tokens_,
+                                               current_step_));
+
+  PrefillDecodeHandoff handoff;
+  handoff.current_step = current_step_;
+  handoff.last_prefill_token_id = last_prefill_token_id;
+  handoff.processed_token_ids = std::move(processed_and_pending.first);
+  handoff.pending_token_id = processed_and_pending.second;
+
+  for (const auto& [cache_name, cache_buffer] :
+       cache_update_inference_context_.prefill_output_buffers) {
+    if (!IsKVCacheTensor(cache_name)) {
+      continue;
+    }
+    ASSIGN_OR_RETURN(auto host_copy, CloneTensorBufferToHost(cache_buffer));
+    handoff.kv_cache_buffers.emplace(std::string(cache_name),
+                                     std::move(host_copy));
+    if (auto quantization_it =
+            handoff_kv_cache_quantization_.find(std::string(cache_name));
+        quantization_it != handoff_kv_cache_quantization_.end()) {
+      handoff.kv_cache_quantization.emplace(std::string(cache_name),
+                                            quantization_it->second);
+    }
+  }
+  RETURN_IF_ERROR(handoff.Validate());
+  return handoff;
+}
+
 LlmLiteRtNpuCompiledModelExecutor::LatencyStats
 LlmLiteRtNpuCompiledModelExecutor::GetLatencyStats() const {
   return latency_stats_;
@@ -1781,6 +1906,9 @@ LlmLiteRtNpuCompiledModelExecutor::CreateForModelHasPerLayerEmbedding(
       llm_compiled_model, llm_inference_context,
       npu_auxiliary_context.npu_auxiliary_compiled_model, rope_context,
       mask_context, cache_update_inference_context));
+  ASSIGN_OR_RETURN(auto handoff_kv_cache_quantization,
+                   ExtractPrefillHandoffQuantizationParams(*transformer_model,
+                                                           kPrefillSignature));
 
   // For now we only support one prefill length in the model.
   SortedPrefillSignatureMap prefill_runner_set;
@@ -1819,7 +1947,8 @@ LlmLiteRtNpuCompiledModelExecutor::CreateForModelHasPerLayerEmbedding(
       std::move(npu_auxiliary_context), std::move(mask_context),
       std::move(rope_context), std::move(llm_compiled_model),
       std::move(llm_inference_context),
-      std::move(cache_update_inference_context), std::move(prefill_runner_set),
+      std::move(cache_update_inference_context),
+      std::move(handoff_kv_cache_quantization), std::move(prefill_runner_set),
       std::move(embedding_lookup_manager),
       std::move(embedder_per_layer_context)));
   return executor;
@@ -1950,6 +2079,9 @@ LlmLiteRtNpuCompiledModelExecutor::CreateForModelWithoutPerLayerEmbedding(
       llm_compiled_model, llm_inference_context,
       npu_auxiliary_context.npu_auxiliary_compiled_model, rope_context,
       mask_context, cache_update_inference_context));
+  ASSIGN_OR_RETURN(auto handoff_kv_cache_quantization,
+                   ExtractPrefillHandoffQuantizationParams(*transformer_model,
+                                                           kPrefillSignature));
 
   // For now we only support one prefill length in the model.
   SortedPrefillSignatureMap prefill_runner_set;
@@ -1973,7 +2105,8 @@ LlmLiteRtNpuCompiledModelExecutor::CreateForModelWithoutPerLayerEmbedding(
       std::move(npu_auxiliary_context), std::move(mask_context),
       std::move(rope_context), std::move(llm_compiled_model),
       std::move(llm_inference_context),
-      std::move(cache_update_inference_context), std::move(prefill_runner_set),
+      std::move(cache_update_inference_context),
+      std::move(handoff_kv_cache_quantization), std::move(prefill_runner_set),
       std::move(maybe_embedding_lookup_manager),
       /*embedder_per_layer_context=*/std::nullopt));
   return executor;

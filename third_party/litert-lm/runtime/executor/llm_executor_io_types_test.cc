@@ -254,6 +254,53 @@ TEST(LlmExecutorIoTypesTest, ExecutorTextDataCachedTextEmbeddingsGetSet) {
             (std::vector<float>{4.0f, 5.0f, 6.0f}));
 }
 
+TEST(LlmExecutorIoTypesTest, PrefillDecodeHandoffValidate) {
+  PrefillDecodeHandoff handoff;
+  handoff.current_step = 3;
+  handoff.last_prefill_token_id = 42;
+  handoff.processed_token_ids = {11, 12};
+  handoff.pending_token_id = 13;
+  auto kv_cache_buffer = TensorBuffer::CreateManagedHostMemory(
+      ::litert::RankedTensorType(ElementType::Int8, Layout(Dimensions({4}))),
+      /*size=*/4);
+  ASSERT_TRUE(kv_cache_buffer.HasValue());
+  handoff.kv_cache_buffers["kv_cache_k_0"] = std::move(*kv_cache_buffer);
+  EXPECT_TRUE(handoff.Validate().ok()) << handoff.Validate();
+
+  handoff.current_step = 2;
+  EXPECT_FALSE(handoff.Validate().ok());
+
+  handoff.current_step = 3;
+  handoff.kv_cache_buffers.clear();
+  EXPECT_FALSE(handoff.Validate().ok());
+}
+
+TEST(LlmExecutorIoTypesTest, PrefillDecodeHandoffValidateQuantizationMetadata) {
+  PrefillDecodeHandoff handoff;
+  handoff.current_step = 3;
+  handoff.last_prefill_token_id = 42;
+  handoff.processed_token_ids = {11, 12};
+  handoff.pending_token_id = 13;
+  auto kv_cache_buffer = TensorBuffer::CreateManagedHostMemory(
+      ::litert::RankedTensorType(ElementType::Int16, Layout(Dimensions({4}))),
+      /*size=*/8);
+  ASSERT_TRUE(kv_cache_buffer.HasValue());
+  handoff.kv_cache_buffers["kv_cache_k_0"] = std::move(*kv_cache_buffer);
+  handoff.kv_cache_quantization["kv_cache_k_0"] = KvCacheQuantizationParams{
+      .source_element_type = ElementType::Int16,
+      .scale = 0.5f,
+      .zero_point = 3,
+  };
+  EXPECT_TRUE(handoff.Validate().ok()) << handoff.Validate();
+
+  handoff.kv_cache_quantization["missing_tensor"] = KvCacheQuantizationParams{
+      .source_element_type = ElementType::Int16,
+      .scale = 0.5f,
+      .zero_point = 0,
+  };
+  EXPECT_FALSE(handoff.Validate().ok());
+}
+
 TEST(LlmExecutorIoTypesTest, ExecutorVisionDataGetSet) {
   struct alignas(LITERT_HOST_MEMORY_BUFFER_ALIGNMENT) {
     float d[2] = {31.0f, 32.0f};

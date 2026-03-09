@@ -183,6 +183,60 @@ absl::Status CopyKvCacheBuffers(
   return absl::OkStatus();
 }
 
+absl::StatusOr<TensorBuffer> CloneTensorBufferToHost(
+    const TensorBuffer& source_buffer) {
+  LITERT_ASSIGN_OR_RETURN(auto tensor_type, source_buffer.TensorType());
+  LITERT_ASSIGN_OR_RETURN(auto packed_size, source_buffer.PackedSize());
+  LITERT_ASSIGN_OR_RETURN(
+      auto host_buffer,
+      TensorBuffer::CreateManagedHostMemory(tensor_type, packed_size));
+  LITERT_ASSIGN_OR_RETURN(
+      auto source_lock,
+      TensorBufferScopedLock::Create(
+          *const_cast<TensorBuffer*>(&source_buffer),
+          TensorBuffer::LockMode::kRead));
+  LITERT_ASSIGN_OR_RETURN(
+      auto host_lock,
+      TensorBufferScopedLock::Create(host_buffer,
+                                     TensorBuffer::LockMode::kWrite));
+  std::memcpy(host_lock.second, source_lock.second, packed_size);
+  return host_buffer;
+}
+
+absl::Status CopyTensorBufferContents(
+    const TensorBuffer& source_buffer, TensorBuffer& destination_buffer,
+    absl::string_view tensor_name,
+    const std::optional<KvCacheQuantizationParams>& quantization_params) {
+  return CopyHandoffKvCacheBuffer(source_buffer, quantization_params,
+                                  destination_buffer, tensor_name);
+}
+
+absl::StatusOr<std::pair<std::vector<int>, int>> ExportSingleCandidateTokens(
+    const ProcessedTokens& processed_tokens, int current_step) {
+  const auto token_candidates = processed_tokens.GetCopyOfTokens();
+  RET_CHECK_EQ(token_candidates.size(), 1)
+      << "Prefill/decode handoff only supports a single decode candidate.";
+  RET_CHECK_EQ(token_candidates[0].size(), current_step)
+      << "Processed token count does not match current step.";
+  RET_CHECK_GT(current_step, 0)
+      << "Cannot export handoff for an empty prefill state.";
+
+  std::vector<int> processed = token_candidates[0];
+  const int pending_token_id = processed.back();
+  processed.pop_back();
+  return std::make_pair(std::move(processed), pending_token_id);
+}
+
+absl::Status RestoreSingleCandidateTokens(
+    absl::Span<const int> processed_token_ids, int pending_token_id,
+    ProcessedTokens& processed_tokens) {
+  processed_tokens = ProcessedTokens();
+  processed_tokens.AddProcessedTokens(
+      std::vector<int>(processed_token_ids.begin(), processed_token_ids.end()));
+  return processed_tokens.AddPendingInputToken(
+      {std::make_shared<TokenData>(pending_token_id)});
+}
+
 // Returns the backend to be used for sampling.
 absl::StatusOr<Backend> GetSamplerBackend(
     const LlmExecutorSettings& executor_settings) {
@@ -1444,6 +1498,79 @@ absl::StatusOr<int> LlmLiteRtCompiledModelExecutorBase::GetVocabSize() {
       decode_output_buffers_[signatures_.output_logits].TensorType());
   RET_CHECK_EQ(logits_tensor_type.Layout().Dimensions().size(), 3);
   return logits_tensor_type.Layout().Dimensions()[2];
+}
+
+absl::StatusOr<PrefillDecodeHandoff>
+LlmLiteRtCompiledModelExecutorBase::ExportPrefillDecodeHandoff(
+    int last_prefill_token_id) const {
+  ASSIGN_OR_RETURN(const int current_step, GetCurrentStep());
+  RET_CHECK_GT(current_step, 0)
+      << "Cannot export prefill/decode handoff before prefill.";
+  ASSIGN_OR_RETURN(
+      auto processed_and_pending,
+      ExportSingleCandidateTokens(llm_context_->processed_context()
+                                      .processed_tokens(),
+                                  current_step));
+
+  PrefillDecodeHandoff handoff;
+  handoff.current_step = current_step;
+  handoff.last_prefill_token_id = last_prefill_token_id;
+  handoff.processed_token_ids = std::move(processed_and_pending.first);
+  handoff.pending_token_id = processed_and_pending.second;
+
+  for (const auto& [cache_name, cache_buffer] : *input_kv_cache_buffers_) {
+    ASSIGN_OR_RETURN(auto host_copy, CloneTensorBufferToHost(cache_buffer));
+    handoff.kv_cache_buffers.emplace(std::string(cache_name),
+                                     std::move(host_copy));
+  }
+  RETURN_IF_ERROR(handoff.Validate());
+  return handoff;
+}
+
+absl::Status LlmLiteRtCompiledModelExecutorBase::ImportPrefillDecodeHandoff(
+    const PrefillDecodeHandoff& handoff) {
+  RETURN_IF_ERROR(handoff.Validate());
+  RET_CHECK_EQ(llm_context_->runtime_config().output_heads.value_or(1), 1)
+      << "Prefill/decode handoff only supports a single decode candidate.";
+  RET_CHECK(!kv_cache_buffers_1_.empty())
+      << "CPU/GPU executor does not expose importable KV cache buffers.";
+  RET_CHECK_EQ(handoff.kv_cache_buffers.size(), kv_cache_buffers_1_.size())
+      << "Prefill/decode handoff KV cache set does not match executor.";
+
+  for (auto& [cache_name, cache_buffer] : kv_cache_buffers_1_) {
+    auto handoff_it = handoff.kv_cache_buffers.find(std::string(cache_name));
+    RET_CHECK(handoff_it != handoff.kv_cache_buffers.end())
+        << "Missing KV cache tensor in handoff: " << cache_name;
+    std::optional<KvCacheQuantizationParams> quantization_params =
+        std::nullopt;
+    if (auto quantization_it =
+            handoff.kv_cache_quantization.find(std::string(cache_name));
+        quantization_it != handoff.kv_cache_quantization.end()) {
+      quantization_params = quantization_it->second;
+    }
+    RETURN_IF_ERROR(
+        CopyTensorBufferContents(handoff_it->second, cache_buffer, cache_name,
+                                 quantization_params));
+  }
+
+  for (auto& [cache_name, cache_buffer] : kv_cache_buffers_2_) {
+    RET_CHECK(kv_cache_buffers_1_.contains(cache_name))
+        << "KV cache tensor missing from primary buffer set: " << cache_name;
+    RETURN_IF_ERROR(CopyTensorBufferContents(kv_cache_buffers_1_.at(cache_name),
+                                             cache_buffer, cache_name,
+                                             /*quantization_params=*/std::nullopt));
+  }
+
+  input_kv_cache_buffers_ = &kv_cache_buffers_1_;
+  output_kv_cache_buffers_ =
+      kv_cache_buffers_2_.empty() ? &kv_cache_buffers_1_ : &kv_cache_buffers_2_;
+  force_prepare_needed_ = false;
+  llm_context_->runtime_state().current_step = handoff.current_step;
+  llm_context_->runtime_state().ran_decode = false;
+  RETURN_IF_ERROR(RestoreSingleCandidateTokens(
+      handoff.processed_token_ids, handoff.pending_token_id,
+      llm_context_->processed_context().processed_tokens()));
+  return absl::OkStatus();
 }
 
 /* ===========================================================================*/

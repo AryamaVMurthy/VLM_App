@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <ios>
+#include <cmath>
 #include <optional>
 #include <ostream>
 #include <string>
@@ -32,6 +33,48 @@
 namespace litert::lm {
 
 constexpr char kFieldIndent[] = "  ";
+
+absl::Status KvCacheQuantizationParams::Validate(
+    absl::string_view tensor_name) const {
+  if (source_element_type == ::litert::ElementType::None) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "KvCacheQuantizationParams for '", tensor_name,
+        "' must specify a source_element_type."));
+  }
+  if (!std::isfinite(scale) || scale <= 0.0f) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("KvCacheQuantizationParams for '", tensor_name,
+                     "' must specify a positive finite scale."));
+  }
+  return absl::OkStatus();
+}
+
+absl::Status PrefillDecodeHandoff::Validate() const {
+  if (current_step <= 0) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("PrefillDecodeHandoff::current_step must be positive, got ",
+                     current_step, "."));
+  }
+  if (processed_token_ids.size() + 1 != current_step) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "PrefillDecodeHandoff token state is inconsistent: processed tokens=",
+        processed_token_ids.size(), ", current_step=", current_step, "."));
+  }
+  if (kv_cache_buffers.empty()) {
+    return absl::InvalidArgumentError(
+        "PrefillDecodeHandoff::kv_cache_buffers must not be empty.");
+  }
+  for (const auto& [tensor_name, quantization_params] : kv_cache_quantization) {
+    if (!kv_cache_buffers.contains(tensor_name)) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("PrefillDecodeHandoff::kv_cache_quantization contains "
+                       "metadata for missing tensor '",
+                       tensor_name, "'."));
+    }
+    RETURN_IF_ERROR(quantization_params.Validate(tensor_name));
+  }
+  return absl::OkStatus();
+}
 
 absl::Status ExecutorTextData::CachedTextEmbeddings::Validate() const {
   if (token_count < 0) {

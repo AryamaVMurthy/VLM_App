@@ -356,7 +356,35 @@ absl::Status SessionBasic::PrefillInternal(
   ASSIGN_OR_RETURN(
       last_prefill_token_id_,
       Prefill(executor_, inputs, wait_for_completion, benchmark_info_));
+  decode_prompt_finalized_ = false;
   session_state_ = SessionState::kPrefilled;
+  return absl::OkStatus();
+}
+
+absl::Status SessionBasic::FinalizeDecodePromptIfNeeded() {
+  if (decode_prompt_finalized_) {
+    return absl::OkStatus();
+  }
+  if (!session_config_.GetApplyPromptTemplateInSession()) {
+    decode_prompt_finalized_ = true;
+    return absl::OkStatus();
+  }
+  std::vector<InputData> contents;
+  contents.emplace_back(InputText(""));
+  ASSIGN_OR_RETURN(std::vector<InputData> templated_contents,
+                   ApplyPromptTemplates(contents, ContentType::kLast,
+                                        session_config_, tokenizer_,
+                                        /*is_first_turn=*/false));
+  if (templated_contents.empty()) {
+    decode_prompt_finalized_ = true;
+    return absl::OkStatus();
+  }
+  ASSIGN_OR_RETURN(std::vector<InputData> preprocessed_contents,
+                   PreprocessContents(templated_contents, session_config_,
+                                      tokenizer_, benchmark_info_));
+  RETURN_IF_ERROR(
+      PrefillInternal(preprocessed_contents, /*wait_for_completion=*/true));
+  decode_prompt_finalized_ = true;
   return absl::OkStatus();
 }
 
@@ -483,23 +511,7 @@ absl::StatusOr<Responses> SessionBasic::DecodeInternal(
     return absl::InternalError("Session is not prefilled yet.");
   }
 
-  // We need to do a last prefill before initializing the decode, to make sure
-  // the prompt is correctly set up for decode.
-  if (session_config_.GetApplyPromptTemplateInSession()) {
-    std::vector<InputData> contents;
-    contents.emplace_back(InputText(""));
-    ASSIGN_OR_RETURN(
-        std::vector<InputData> templated_contents,
-        ApplyPromptTemplates(contents, ContentType::kLast, session_config_,
-                             tokenizer_, /*is_first_turn=*/false));
-    if (!templated_contents.empty()) {
-      ASSIGN_OR_RETURN(std::vector<InputData> preprocessed_contents,
-                       PreprocessContents(templated_contents, session_config_,
-                                          tokenizer_, benchmark_info_));
-      RETURN_IF_ERROR(PrefillInternal(preprocessed_contents,
-                                      /*wait_for_completion=*/true));
-    }
-  }
+  RETURN_IF_ERROR(FinalizeDecodePromptIfNeeded());
   session_state_ = SessionState::kDecoded;
 
   if (sampler_ == nullptr) {
@@ -557,6 +569,38 @@ absl::Status SessionBasic::DecodeInternalStreaming(
         decode_config.GetMaxOutputTokens().value_or(
             session_config_.GetMaxOutputTokens())));
   }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<PrefillDecodeHandoff> SessionBasic::ExportPrefillDecodeHandoff() {
+  if (session_state_ != SessionState::kPrefilled) {
+    return absl::FailedPreconditionError(
+        "Session must be prefilled before exporting decode handoff.");
+  }
+  RETURN_IF_ERROR(FinalizeDecodePromptIfNeeded());
+  return executor_.ExportPrefillDecodeHandoff(last_prefill_token_id_);
+}
+
+absl::Status SessionBasic::ImportPrefillDecodeHandoff(
+    const PrefillDecodeHandoff& handoff) {
+  if (session_state_ != SessionState::kFresh) {
+    return absl::FailedPreconditionError(
+        "Session must be fresh before importing decode handoff.");
+  }
+  RETURN_IF_ERROR(handoff.Validate());
+  RETURN_IF_ERROR(executor_.ImportPrefillDecodeHandoff(handoff));
+  last_prefill_token_id_ = handoff.last_prefill_token_id;
+  session_state_ = SessionState::kPrefilled;
+  decode_prompt_finalized_ = true;
+  return absl::OkStatus();
+}
+
+absl::Status SessionBasic::ResetForReuse() {
+  RETURN_IF_ERROR(executor_.Reset());
+  cancelled_ = false;
+  last_prefill_token_id_ = 0;
+  decode_prompt_finalized_ = false;
+  session_state_ = SessionState::kFresh;
   return absl::OkStatus();
 }
 

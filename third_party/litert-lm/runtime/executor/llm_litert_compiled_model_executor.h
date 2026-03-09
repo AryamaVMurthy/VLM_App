@@ -93,6 +93,12 @@ class LlmLiteRtCompiledModelExecutorBase : public LlmExecutor {
     return executor_settings_;
   }
 
+  absl::StatusOr<PrefillDecodeHandoff> ExportPrefillDecodeHandoff(
+      int last_prefill_token_id) const override;
+
+  absl::Status ImportPrefillDecodeHandoff(
+      const PrefillDecodeHandoff& handoff) override;
+
   // Gets the current step of the executor.
   // Public API, the return value is the current step that user expects (e.g.
   // users prefill 100 tokens, then they expect the current step to be 100). It

@@ -96,7 +96,7 @@ class GQAEvalHelpersTest(unittest.TestCase):
         module = load_module()
         command = module.build_runner_command(
             runner_script=pathlib.Path('scripts/run_fastvlm_litert_npu_adb.sh'),
-            prompt='Question: test?\nRespond exactly as: Answer: <one or two words>.',
+            prompt='Question: test?\nAnswer with one or two words.',
             model_path=pathlib.Path('artifacts/models/model.litertlm'),
             max_visual_tokens=96,
             visual_token_pruning_strategy='prompt_conditioned_v1',
@@ -111,7 +111,7 @@ class GQAEvalHelpersTest(unittest.TestCase):
         self.assertIn('--skip-push', command)
         self.assertIn('1', command)
         self.assertIn('--prompt', command)
-        self.assertIn('Question: test?\nRespond exactly as: Answer: <one or two words>.', command)
+        self.assertIn('Question: test?\nAnswer with one or two words.', command)
         self.assertIn('--constraint-regex', command)
         self.assertIn(r' ?Answer: [A-Za-z0-9]+(?: [A-Za-z0-9]+)?', command)
 
@@ -119,7 +119,7 @@ class GQAEvalHelpersTest(unittest.TestCase):
         module = load_module()
         self.assertEqual(
             module.gqa_prompt('What is it?'),
-            'Question: What is it?\nRespond exactly as: Answer: <one or two words>.',
+            'Question: What is it?\nAnswer with one or two words.',
         )
 
 

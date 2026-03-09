@@ -21,13 +21,16 @@
 #include <optional>
 #include <ostream>
 #include <random>
+#include <string>
 #include <utility>
 #include <vector>
 
-#include "absl/status/status.h"  // from @com_google_absl
+#include "absl/container/flat_hash_map.h"  // from @com_google_absl
 #include "absl/base/nullability.h"  // from @com_google_absl
+#include "absl/status/status.h"  // from @com_google_absl
 #include "absl/status/statusor.h"  // from @com_google_absl
 #include "absl/types/span.h"  // from @com_google_absl
+#include "litert/cc/litert_element_type.h"  // from @litert
 #include "litert/cc/litert_tensor_buffer.h"  // from @litert
 #include "runtime/components/constrained_decoding/constrained_decoder.h"
 #include "runtime/executor/llm_executor_processed_tokens.h"
@@ -89,6 +92,28 @@ struct RuntimeState {
   // This is only used by the compiled model executor to determine whether
   // KVCache preparation for prefill or decode should be done.
   bool ran_decode = false;
+};
+
+struct KvCacheQuantizationParams {
+  ::litert::ElementType source_element_type = ::litert::ElementType::None;
+  float scale = 0.0f;
+  int64_t zero_point = 0;
+
+  absl::Status Validate(absl::string_view tensor_name) const;
+};
+
+// Serializable handoff artifact used to transfer a fully-prefilled request
+// from one executor backend to another before decode starts.
+struct PrefillDecodeHandoff {
+  int current_step = 0;
+  int last_prefill_token_id = 0;
+  std::vector<int> processed_token_ids;
+  int pending_token_id = 0;
+  absl::flat_hash_map<std::string, ::litert::TensorBuffer> kv_cache_buffers;
+  absl::flat_hash_map<std::string, KvCacheQuantizationParams>
+      kv_cache_quantization;
+
+  absl::Status Validate() const;
 };
 
 // A resource interface to hold the llm context.
