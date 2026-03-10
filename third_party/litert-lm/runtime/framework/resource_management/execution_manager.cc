@@ -15,8 +15,10 @@
 #include "runtime/framework/resource_management/execution_manager.h"
 
 #include <atomic>
+#include <cstdlib>
 #include <memory>
 #include <optional>
+#include <string>
 #include <tuple>
 #include <utility>
 #include <variant>
@@ -31,7 +33,9 @@
 #include "absl/memory/memory.h"  // from @com_google_absl
 #include "absl/status/status.h"  // from @com_google_absl
 #include "absl/status/statusor.h"  // from @com_google_absl
+#include "absl/strings/ascii.h"  // from @com_google_absl
 #include "absl/strings/str_cat.h"  // from @com_google_absl
+#include "absl/strings/string_view.h"  // from @com_google_absl
 #include "absl/synchronization/mutex.h"  // from @com_google_absl
 #include "absl/time/time.h"  // from @com_google_absl
 #include "litert/cc/litert_environment.h"  // from @litert
@@ -62,6 +66,29 @@
 namespace litert::lm {
 namespace {
 
+absl::Status ApplyBoolPruningOverride(absl::string_view env_name,
+                                      bool& destination) {
+  const char* value = std::getenv(std::string(env_name).c_str());
+  if (value == nullptr || value[0] == '\0') {
+    return absl::OkStatus();
+  }
+  const absl::string_view normalized(value);
+  if (normalized == "1" || absl::EqualsIgnoreCase(normalized, "true") ||
+      absl::EqualsIgnoreCase(normalized, "yes")) {
+    destination = true;
+  } else if (normalized == "0" ||
+             absl::EqualsIgnoreCase(normalized, "false") ||
+             absl::EqualsIgnoreCase(normalized, "no")) {
+    destination = false;
+  } else {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Invalid bool value for ", env_name, ": '", value, "'."));
+  }
+  ABSL_LOG(INFO) << "Applied visual token pruning override " << env_name
+                 << "=" << (destination ? "true" : "false");
+  return absl::OkStatus();
+}
+
 absl::StatusOr<VisionTokenPruningConfig> CreateVisionTokenPruningConfig(
     const SessionConfig& session_config) {
   VisionTokenPruningConfig config;
@@ -69,14 +96,19 @@ absl::StatusOr<VisionTokenPruningConfig> CreateVisionTokenPruningConfig(
       config.strategy,
       ParseVisionTokenPruningStrategy(
           session_config.GetVisualTokenPruningStrategy()));
+  RETURN_IF_ERROR(ApplyBoolPruningOverride(
+      "LITERT_LM_PRUNING_FUSE_PROJECTION_PRUNE_PACK",
+      config.fuse_projection_prune_pack));
   return config;
 }
 
 bool UsesPromptConditionedPruning(
     const std::optional<VisionTokenPruningConfig>& pruning_config) {
   return pruning_config.has_value() &&
-         pruning_config->strategy ==
-             VisionTokenPruningStrategy::kPromptConditionedV1;
+         (pruning_config->strategy ==
+              VisionTokenPruningStrategy::kPromptConditionedV1 ||
+          pruning_config->strategy ==
+              VisionTokenPruningStrategy::kPromptConditionedV2);
 }
 
 absl::Status AppendTextTokenEmbeddingsToCache(
@@ -587,8 +619,10 @@ absl::StatusOr<ExecutorInputs> ExecutionManager::ProcessAndCombineContents(
       if (UsesPromptConditionedPruning(pruning_config)) {
         if (prompt_embedding_lookup_manager_ == nullptr) {
           return absl::FailedPreconditionError(
-              "prompt_conditioned_v1 requires the real FastVLM text embedder, "
-              "but no prompt embedding lookup manager is available.");
+              absl::StrCat(VisionTokenPruningStrategyToString(
+                               pruning_config->strategy),
+                           " requires the real FastVLM text embedder, but no "
+                           "prompt embedding lookup manager is available."));
         }
         if (!cached_text_embeddings.has_value()) {
           cached_text_embeddings = CachedTextEmbeddings();
@@ -644,6 +678,13 @@ absl::StatusOr<ExecutorInputs> ExecutionManager::ProcessAndCombineContents(
                        << " projected vision tokens.";
         ABSL_LOG(INFO) << "Visual token pruning decision: "
                        << pruned_image_data.decision.ToLogString();
+        if (pruning_config->fuse_projection_prune_pack &&
+            single_image_data.GetSelectedTokenIndices().has_value()) {
+          ABSL_LOG(INFO)
+              << "Using fused projection-prune-pack sparse token view: kept "
+              << single_image_data.GetSelectedTokenIndices()->size()
+              << " projected tokens without materializing a sliced tensor.";
+        }
       }
       if (benchmark_info.has_value()) {
         RETURN_IF_ERROR(benchmark_info->TimeMarkDelta("vision_executor"));

@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -114,6 +115,41 @@ class GQAEvalHelpersTest(unittest.TestCase):
         self.assertIn('Question: test?\nAnswer with one or two words.', command)
         self.assertIn('--constraint-regex', command)
         self.assertIn(r' ?Answer: [A-Za-z0-9]+(?: [A-Za-z0-9]+)?', command)
+
+    def test_build_runner_command_forwards_pruning_env_overrides(self):
+        module = load_module()
+        fake_env = {
+            'LITERT_LM_PRUNING_PROMPT_ATTENTION_TOP_K': '4',
+            'LITERT_LM_PRUNING_MIN_GLOBAL_MEAN_SALIENCE': '0.323',
+            'LITERT_LM_PRUNING_FUSE_PROJECTION_PRUNE_PACK': '1',
+        }
+
+        overrides = module.collect_pruning_env_overrides(fake_env)
+        command = module.build_runner_command(
+            runner_script=pathlib.Path('scripts/run_fastvlm_litert_npu_adb.sh'),
+            prompt='Question: test?\nAnswer with one or two words.',
+            model_path=pathlib.Path('artifacts/models/model.litertlm'),
+            max_visual_tokens=96,
+            visual_token_pruning_strategy='prompt_conditioned_v2',
+            max_output_tokens=12,
+            constraint_regex='',
+            skip_build=True,
+            skip_push=True,
+            pruning_env_overrides=overrides,
+        )
+
+        self.assertEqual(
+            overrides,
+            {
+                'LITERT_LM_PRUNING_PROMPT_ATTENTION_TOP_K': '4',
+                'LITERT_LM_PRUNING_MIN_GLOBAL_MEAN_SALIENCE': '0.323',
+                'LITERT_LM_PRUNING_FUSE_PROJECTION_PRUNE_PACK': '1',
+            },
+        )
+        self.assertIn('--forward-env', command)
+        self.assertIn('LITERT_LM_PRUNING_PROMPT_ATTENTION_TOP_K=4', command)
+        self.assertIn('LITERT_LM_PRUNING_MIN_GLOBAL_MEAN_SALIENCE=0.323', command)
+        self.assertIn('LITERT_LM_PRUNING_FUSE_PROJECTION_PRUNE_PACK=1', command)
 
     def test_gqa_prompt_uses_structured_answer_prefix(self):
         module = load_module()

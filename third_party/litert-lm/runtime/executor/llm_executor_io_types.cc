@@ -25,6 +25,7 @@
 #include "absl/status/status.h"  // from @com_google_absl
 #include "absl/status/statusor.h"  // from @com_google_absl
 #include "absl/strings/str_cat.h"  // from @com_google_absl
+#include "absl/strings/str_join.h"  // from @com_google_absl
 #include "litert/cc/litert_tensor_buffer.h"  // from @litert
 #include "runtime/components/constrained_decoding/constrained_decoder.h"
 #include "runtime/util/logging_tensor_buffer.h"
@@ -208,6 +209,25 @@ void ExecutorVisionData::SetPerLayerEmbeddings(
   per_layer_embeddings_ = std::move(per_layer_embeddings);
 }
 
+void ExecutorVisionData::SetSelectedTokenIndices(
+    const std::vector<int>& selected_token_indices) {
+  selected_token_indices_ = selected_token_indices;
+}
+
+void ExecutorVisionData::SetSelectedTokenIndices(
+    std::vector<int>&& selected_token_indices) {
+  selected_token_indices_ = std::move(selected_token_indices);
+}
+
+void ExecutorVisionData::SetSelectedTokenIndices(
+    std::optional<std::vector<int>>&& selected_token_indices) {
+  selected_token_indices_ = std::move(selected_token_indices);
+}
+
+void ExecutorVisionData::ClearSelectedTokenIndices() {
+  selected_token_indices_.reset();
+}
+
 // Helper function to print a field from StatusOr<const TensorBuffer*>
 static void PrintOptionalTensorBufferFieldFromStatusOr(
     std::ostream& os, const std::string& field_name,
@@ -235,6 +255,14 @@ std::ostream& operator<<(std::ostream& os,
   PrintOptionalTensorBufferFieldFromStatusOr(
       os, "PerLayerEmbeddings", vision_data.GetPerLayerEmbeddingsPtr(),
       kFieldIndent);
+  os << "\n" << kFieldIndent << "SelectedTokenIndices: ";
+  if (vision_data.GetSelectedTokenIndices().has_value()) {
+    os << "["
+       << absl::StrJoin(*vision_data.GetSelectedTokenIndices(), ", ")
+       << "]";
+  } else {
+    os << "nullopt";
+  }
   os << "\n"
      << "}";
   return os;

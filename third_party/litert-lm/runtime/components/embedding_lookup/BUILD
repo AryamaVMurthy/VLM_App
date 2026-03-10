@@ -163,3 +163,62 @@ cc_library(
         ],
     }),
 )
+
+cc_test(
+    name = "embedding_lookup_multi_modal_test",
+    srcs = ["embedding_lookup_multi_modal_test.cc"],
+    deps = [
+        ":embedding_lookup_multi_modal",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/types:span",
+        "//runtime/util:test_utils",
+    ] + select({
+        "@litert//litert:litert_link_capi_so": [
+            "@litert//litert/cc:litert_api_with_dynamic_runtime",
+        ],
+        "//conditions:default": [
+            "@litert//litert/cc:litert_element_type",
+            "@litert//litert/cc:litert_environment",
+            "@litert//litert/cc:litert_expected",
+            "@litert//litert/cc:litert_layout",
+            "@litert//litert/cc:litert_macros",
+            "@litert//litert/cc:litert_ranked_tensor_type",
+            "@litert//litert/cc:litert_tensor_buffer",
+            "@litert//litert/cc:litert_tensor_buffer_types",
+            "@litert//litert/test:matchers",
+        ],
+    }),
+)
+
+cc_test(
+    name = "embedding_lookup_manager_test",
+    srcs = ["embedding_lookup_manager_test.cc"],
+    data = ["//runtime/components/testdata"],
+    deps = [
+        ":embedding_lookup_manager",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/types:span",
+        "//runtime/executor:llm_executor_io_types",
+        "//runtime/util:litert_status_util",
+        "//runtime/util:test_utils",
+    ] + select({
+        "@litert//litert:litert_link_capi_so": [
+            "@litert//litert/cc:litert_api_with_dynamic_runtime",
+        ],
+        "//conditions:default": [
+            "@litert//litert/cc:litert_element_type",
+            "@litert//litert/cc:litert_environment",
+            "@litert//litert/cc:litert_expected",
+            "@litert//litert/cc:litert_layout",
+            "@litert//litert/cc:litert_macros",
+            "@litert//litert/cc:litert_model",
+            "@litert//litert/cc:litert_ranked_tensor_type",
+            "@litert//litert/cc:litert_tensor_buffer",
+            "@litert//litert/cc:litert_tensor_buffer_types",
+            "@litert//litert/test:matchers",
+        ],
+    }),
+)

@@ -18,10 +18,13 @@ MAX_OUTPUT_TOKENS=128
 MAX_VISUAL_TOKENS=0
 VISUAL_TOKEN_PRUNING_STRATEGY="prompt_conditioned_v1"
 PREPARE_QUEUE_SIZE=4
+ADAPTIVE_VISUAL_TOKEN_BUDGETS=""
+BUDGET_CONTROLLER_ANSWER_MODE="none"
 CONSTRAINT_REGEX=""
 JOBS=6
 SKIP_BUILD=0
 SKIP_PUSH=0
+SKIP_INPUT_SYNC=0
 EVENT_MODE=1
 IMAGE_HOST_PATHS=()
 REQUEST_MANIFEST_HOST_PATH=""
@@ -47,11 +50,16 @@ Options:
                        Visual token pruning strategy
   --prepare-queue-size N
                        Number of prepared requests to buffer ahead of prefill
+  --adaptive-visual-token-budgets CSV
+                       Optional comma-separated adaptive budget buckets
+  --budget-controller-answer-mode MODE
+                       Adaptive controller hint: none, short, or long
   --constraint-regex R Decode-time regex constraint passed to LiteRT-LM
   --event-mode 0|1      Emit structured VLM_EVENT lines (default: 1)
   --jobs N              Bazel jobs / local CPU cap
   --skip-build 0|1      Skip Bazel build
-  --skip-push 0|1       Skip adb push
+  --skip-push 0|1       Skip pushing static runtime/model assets
+  --skip-input-sync 0|1 Skip pushing the current manifest and images
   --device-dir PATH     Device run directory
   -h, --help            Show help
 EOF
@@ -99,6 +107,14 @@ while [[ $# -gt 0 ]]; do
       PREPARE_QUEUE_SIZE="${2:-}"
       shift 2
       ;;
+    --adaptive-visual-token-budgets)
+      ADAPTIVE_VISUAL_TOKEN_BUDGETS="${2:-}"
+      shift 2
+      ;;
+    --budget-controller-answer-mode)
+      BUDGET_CONTROLLER_ANSWER_MODE="${2:-}"
+      shift 2
+      ;;
     --constraint-regex)
       CONSTRAINT_REGEX="${2:-}"
       shift 2
@@ -117,6 +133,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-push)
       SKIP_PUSH="${2:-}"
+      shift 2
+      ;;
+    --skip-input-sync)
+      SKIP_INPUT_SYNC="${2:-}"
       shift 2
       ;;
     --device-dir)
@@ -264,7 +284,11 @@ if [[ "${SKIP_PUSH}" == "0" ]]; then
   adb push "${COMPILER_PLUGIN_SO_PATH}" "${DEVICE_DIR}/dispatch_libs/libLiteRtCompilerPlugin_Qualcomm.so" >/dev/null
   adb push "${QAIRT_ROOT}/lib/aarch64-android/." "${DEVICE_DIR}/dispatch_libs/" >/dev/null
   adb push "${QAIRT_ROOT}/lib/hexagon-v79/unsigned/." "${DEVICE_DIR}/hexagon-v79/" >/dev/null
+fi
 
+if [[ "${SKIP_INPUT_SYNC}" == "0" ]]; then
+  DEVICE_DIR_QUOTED="$(shell_single_quote "${DEVICE_DIR}")"
+  adb shell "mkdir -p ${DEVICE_DIR_QUOTED}"
   for idx in "${!IMAGE_HOST_PATHS[@]}"; do
     adb push "${IMAGE_HOST_PATHS[$idx]}" "${DEVICE_IMAGE_PATHS[$idx]}" >/dev/null
   done
@@ -283,6 +307,23 @@ EVENT_MODE_EXPORT=""
 if [[ "${EVENT_MODE}" == "1" ]]; then
   EVENT_MODE_EXPORT="export LITERT_LM_EVENT_MODE=1 &&"
 fi
+PRUNING_ENV_EXPORT=""
+for pruning_env in \
+  LITERT_LM_PRUNING_PROMPT_SIMILARITY_WEIGHT \
+  LITERT_LM_PRUNING_SALIENCE_WEIGHT \
+  LITERT_LM_PRUNING_REDUNDANCY_PENALTY_WEIGHT \
+  LITERT_LM_PRUNING_PROMPT_ATTENTION_LOGIT_SCALE \
+  LITERT_LM_PRUNING_PROMPT_ATTENTION_TOP_K \
+  LITERT_LM_PRUNING_LOCAL_REFINEMENT_MIN_PROMPT_GAIN \
+  LITERT_LM_PRUNING_MAX_LOCAL_REFINEMENT_FRACTION \
+  LITERT_LM_PRUNING_MAX_LOCAL_REFINEMENT_SALIENCE_DROP \
+  LITERT_LM_PRUNING_MIN_GLOBAL_MEAN_PROMPT_SIMILARITY \
+  LITERT_LM_PRUNING_MIN_GLOBAL_MEAN_SALIENCE \
+  LITERT_LM_PRUNING_FUSE_PROJECTION_PRUNE_PACK; do
+  if [[ -n "${!pruning_env:-}" ]]; then
+    PRUNING_ENV_EXPORT+="export ${pruning_env}=$(shell_single_quote "${!pruning_env}") && "
+  fi
+done
 REQUEST_MANIFEST_ARG=""
 if [[ -n "${REQUEST_MANIFEST_DEVICE_PATH}" ]]; then
   REQUEST_MANIFEST_ARG="    --request_manifest_path=$(shell_single_quote "${REQUEST_MANIFEST_DEVICE_PATH}") \\"
@@ -293,16 +334,24 @@ CONSTRAINT_REGEX_ARG=""
 if [[ -n "${CONSTRAINT_REGEX}" ]]; then
   CONSTRAINT_REGEX_ARG="    --constraint_regex=$(shell_single_quote "${CONSTRAINT_REGEX}") \\"
 fi
+ADAPTIVE_VISUAL_TOKEN_BUDGETS_ARG=""
+if [[ -n "${ADAPTIVE_VISUAL_TOKEN_BUDGETS}" ]]; then
+  ADAPTIVE_VISUAL_TOKEN_BUDGETS_ARG="    --adaptive_visual_token_budgets=$(shell_single_quote "${ADAPTIVE_VISUAL_TOKEN_BUDGETS}") \\"
+fi
+BUDGET_CONTROLLER_ANSWER_MODE_ARG="    --budget_controller_answer_mode=$(shell_single_quote "${BUDGET_CONTROLLER_ANSWER_MODE}") \\"
 if [[ -n "${REQUEST_MANIFEST_DEVICE_PATH}" ]]; then
   INPUT_PROMPT_ARG=""
   IMAGE_PATHS_ARG=""
 fi
+
+echo "Run log: ${RUN_LOG}"
 
 set +e
 adb shell "cd $(shell_single_quote "${DEVICE_DIR}") && \
   export LD_LIBRARY_PATH=$(shell_single_quote "${DEVICE_DIR}:${DEVICE_DIR}/dispatch_libs") && \
   export ADSP_LIBRARY_PATH=$(shell_single_quote "${DEVICE_DIR}/hexagon-v79;/vendor/dsp/cdsp;/system/lib/rfsa/adsp;/system/vendor/lib/rfsa/adsp;/dsp") && \
   ${EVENT_MODE_EXPORT} \
+  ${PRUNING_ENV_EXPORT} \
   ./litert_lm_overlap_main \
     --model_path=$(shell_single_quote "${DEVICE_MODEL_PATH}") \
     --decode_model_path=$(shell_single_quote "${DEVICE_DECODE_MODEL_PATH}") \
@@ -314,13 +363,14 @@ ${IMAGE_PATHS_ARG}\
     --max_visual_tokens='${MAX_VISUAL_TOKENS}' \
     --visual_token_pruning_strategy='${VISUAL_TOKEN_PRUNING_STRATEGY}' \
     --prepare_queue_size='${PREPARE_QUEUE_SIZE}' \
+${ADAPTIVE_VISUAL_TOKEN_BUDGETS_ARG}\
+${BUDGET_CONTROLLER_ANSWER_MODE_ARG}\
 ${CONSTRAINT_REGEX_ARG}\
     --litert_dispatch_lib_dir=$(shell_single_quote "${DEVICE_DIR}/dispatch_libs")" >"${RUN_LOG}" 2>&1
 RUN_RC=$?
 set -e
 
 echo "Run exit code: ${RUN_RC}"
-echo "Run log: ${RUN_LOG}"
 echo
 echo "Key runtime lines:"
 rg -n "OVERLAP_|VLM_EVENT|Applied visual token budget|Visual token pruning decision|ERROR|Invalid" "${RUN_LOG}" | head -n 200 || true

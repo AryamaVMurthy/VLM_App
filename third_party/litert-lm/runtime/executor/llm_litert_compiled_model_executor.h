@@ -127,6 +127,9 @@ class LlmLiteRtCompiledModelExecutorBase : public LlmExecutor {
   const ProcessedTokens& processed_tokens_for_testing() const {
     return llm_context_->processed_context().processed_tokens();
   }
+  bool sampler_handles_input_for_testing() const {
+    return sampler_ != nullptr && sampler_->HandlesInput();
+  }
 
  protected:
   LlmLiteRtCompiledModelExecutorBase(
@@ -180,6 +183,10 @@ class LlmLiteRtCompiledModelExecutorBase : public LlmExecutor {
  protected:
   // Rolls back the processed tokens to the current step.
   absl::Status RollBackProcessedTokens();
+
+  // Clears decode-side state that can survive across requests when sessions
+  // are reused via explicit prefill/decode handoff.
+  absl::Status ResetDecodePipelineState();
 
   // Swaps the input tensors before Sampling when the sampler handles input.
   // Current input_pos and mask tensors in decode_input_buffers_ are swapped

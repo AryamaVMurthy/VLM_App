@@ -51,7 +51,8 @@ ABSL_FLAG(int, max_visual_tokens, 0,
           "vision adapter. A value of 0 disables visual token pruning.");
 ABSL_FLAG(std::string, visual_token_pruning_strategy, "uniform",
           "Visual token pruning strategy to apply after the vision adapter. "
-          "Supported values: uniform, prompt_conditioned_v1.");
+          "Supported values: uniform, prompt_conditioned_v1, "
+          "prompt_conditioned_v2.");
 ABSL_FLAG(std::vector<std::string>, prefill_batch_sizes, {},
           "A list of maximum numbers of prefill tokens processed at once. If "
           "empty, it will be the list of one entry with the length of input "

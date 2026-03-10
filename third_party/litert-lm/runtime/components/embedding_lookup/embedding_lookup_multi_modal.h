@@ -19,6 +19,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "absl/status/status.h"  // from @com_google_absl
@@ -46,7 +47,8 @@ class EmbeddingLookupMultiModal : public EmbeddingLookup {
   // the number of bytes read from embedding_buffer per special_token is
   // 4 * 32 = 128).
   static absl::StatusOr<std::unique_ptr<EmbeddingLookupMultiModal>> Create(
-      const ::litert::TensorBuffer* embedding_buffer, int special_token);
+      const ::litert::TensorBuffer* embedding_buffer, int special_token,
+      std::optional<std::vector<int>> selected_token_indices = std::nullopt);
 
   // For a given token, looks up the embedding and stores it in the
   // provided vector. The caller is responsible for ensuring that the vector is
@@ -93,10 +95,15 @@ class EmbeddingLookupMultiModal : public EmbeddingLookup {
 
  protected:
   absl::Status Initialize(const ::litert::TensorBuffer* embedding_buffer,
-                          int special_token);
+                          int special_token,
+                          std::optional<std::vector<int>> selected_token_indices);
 
   absl::Span<float> embedding_;
+  absl::Span<float> base_embedding_;
   int special_token_;
+  std::optional<std::vector<int>> selected_token_indices_;
+  size_t next_selected_token_index_ = 0;
+  size_t source_floats_per_token_ = 0;
 };
 
 }  // namespace litert::lm

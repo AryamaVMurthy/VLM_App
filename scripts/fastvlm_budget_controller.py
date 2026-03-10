@@ -31,6 +31,8 @@ def choose_visual_token_budget(
     queued_image_count: int,
     recent_prefill_ms: float | None,
     recent_decode_ms: float | None,
+    previous_budget: int | None = None,
+    max_step_change: int = 1,
     answer_mode: str = "none",
 ) -> BudgetDecision:
     buckets = _normalize_buckets(allowed_buckets)
@@ -40,6 +42,8 @@ def choose_visual_token_budget(
         raise ValueError(
             f"queued_image_count must be non-negative, got {queued_image_count}."
         )
+    if max_step_change < 0:
+        raise ValueError(f"max_step_change must be non-negative, got {max_step_change}.")
     normalized_answer_mode = answer_mode.strip().lower()
     if normalized_answer_mode not in {"none", "short", "long"}:
         raise ValueError(f"Unsupported answer_mode: {answer_mode}")
@@ -73,6 +77,19 @@ def choose_visual_token_budget(
     elif normalized_answer_mode == "long" and bucket_index < len(buckets) - 1:
         bucket_index = min(len(buckets) - 1, bucket_index + 1)
         reason_codes.append("long_answer_mode")
+
+    if previous_budget is not None:
+        if previous_budget not in buckets:
+            raise ValueError(
+                f"previous_budget must be one of the allowed buckets, got {previous_budget}."
+            )
+        previous_index = buckets.index(previous_budget)
+        delta = bucket_index - previous_index
+        if abs(delta) > max_step_change:
+            bucket_index = previous_index + (
+                max_step_change if delta > 0 else -max_step_change
+            )
+            reason_codes.append("limited_step_change")
 
     if not reason_codes:
         reason_codes.append("baseline_bucket")

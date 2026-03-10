@@ -18,6 +18,7 @@
 #include <atomic>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -161,12 +162,27 @@ class SessionBasic : public Engine::Session {
     return session_config_;
   }
 
+  void SetMaxVisualTokens(int max_visual_tokens) {
+    session_config_.SetMaxVisualTokens(max_visual_tokens);
+  }
+
+  void SetVisualTokenPruningStrategy(std::string visual_token_pruning_strategy) {
+    session_config_.SetVisualTokenPruningStrategy(
+        std::move(visual_token_pruning_strategy));
+  }
+
+  void SetDebugRequestId(absl::string_view request_id) {
+    debug_request_id_ = std::string(request_id);
+  }
+
   // Util function for creating the combined ExecutorInputs from the
   // preprocessed contents.
   // TODO - b/436674053: Modularize the preprocessing logic into a separate
   // preprocessor class.
   absl::StatusOr<ExecutorInputs> ProcessAndCombineContents(
-      const std::vector<InputData>& preprocessed_contents);
+      const std::vector<InputData>& preprocessed_contents,
+      const ExecutorTextData::CachedTextEmbeddings*
+          prompt_conditioning_cache = nullptr);
 
  private:
   explicit SessionBasic(LlmExecutor* absl_nonnull executor,
@@ -196,7 +212,9 @@ class SessionBasic : public Engine::Session {
   // wrap it with lambda function for scheduling.
   absl::Status PrefillInternal(
       const std::vector<InputData>& preprocessed_contents,
-      bool wait_for_completion);
+      bool wait_for_completion,
+      const ExecutorTextData::CachedTextEmbeddings*
+          prompt_conditioning_cache = nullptr);
 
   absl::Status FinalizeDecodePromptIfNeeded();
 
@@ -234,6 +252,9 @@ class SessionBasic : public Engine::Session {
 
   // The benchmark info used for the session.
   std::optional<BenchmarkInfo> benchmark_info_;
+
+  // Optional request identifier emitted in observability logs.
+  std::string debug_request_id_;
 
   // The thread pool used for the session.
   ThreadPool& worker_thread_pool_;

@@ -31,6 +31,7 @@ using CachedTextEmbeddings = ExecutorTextData::CachedTextEmbeddings;
 enum class VisionTokenPruningStrategy {
   kUniform,
   kPromptConditionedV1,
+  kPromptConditionedV2,
 };
 
 const char* VisionTokenPruningStrategyToString(
@@ -45,7 +46,16 @@ struct VisionTokenPruningConfig {
   float prompt_similarity_weight = 0.6f;
   float salience_weight = 0.3f;
   float redundancy_penalty_weight = 0.1f;
-  int max_logged_token_indices = 8;
+  float prompt_attention_logit_scale = 6.0f;
+  float uniform_anchor_fraction = 0.75f;
+  int prompt_attention_top_k = 4;
+  float local_refinement_min_prompt_gain = 0.05f;
+  float max_local_refinement_fraction = 0.125f;
+  float max_local_refinement_salience_drop = 0.01f;
+  float min_global_mean_prompt_similarity = 0.0f;
+  float min_global_mean_salience = 0.0f;
+  int max_logged_token_indices = 128;
+  bool fuse_projection_prune_pack = false;
 };
 
 struct VisionTokenPruningDecision {
@@ -53,9 +63,20 @@ struct VisionTokenPruningDecision {
       VisionTokenPruningStrategy::kUniform;
   std::vector<int> token_indices;
   std::vector<int> logged_token_indices;
+  std::vector<int> reference_token_indices;
+  std::vector<int> logged_reference_token_indices;
   int original_token_count = 0;
   float mean_prompt_similarity = 0.0f;
   float mean_salience = 0.0f;
+  float mean_reference_prompt_similarity = 0.0f;
+  float mean_reference_salience = 0.0f;
+  int local_refinement_count = 0;
+  int proposed_local_refinement_count = 0;
+  int local_refinement_candidate_count = 0;
+  float mean_local_refinement_prompt_gain = 0.0f;
+  float max_local_refinement_prompt_gain = 0.0f;
+  bool controller_kept_uniform = false;
+  std::string controller_reason;
 
   std::string ToLogString() const;
 };

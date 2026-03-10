@@ -1024,7 +1024,7 @@ TEST(SessionConfigTest,
           absl::StatusCode::kInvalidArgument,
           "VisualTokenPruningStrategy is invalid: Unsupported visual token "
           "pruning strategy: bad_strategy. Expected one of: uniform, "
-          "prompt_conditioned_v1."));
+          "prompt_conditioned_v1, prompt_conditioned_v2."));
 }
 
 TEST(SessionConfigTest,

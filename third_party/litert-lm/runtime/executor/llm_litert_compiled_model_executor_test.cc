@@ -209,6 +209,64 @@ TEST(LlmLiteRtCompiledModelExecutorStaticTest, DecodeTest) {
   }
 }
 
+TEST(LlmLiteRtCompiledModelExecutorStaticTest,
+     ResetClearsImportedDecodeSamplerState) {
+  auto model_path =
+      std::filesystem::path(::testing::SrcDir()) / kTestStaticModelPath;
+  ASSERT_OK_AND_ASSIGN(auto model_resources,
+                       CreateExecutorModelResourcesTask(model_path.string()));
+  ASSERT_OK_AND_ASSIGN(auto model_assets,
+                       ModelAssets::Create(model_path.string()));
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto env, Environment::Create(std::vector<Environment::Option>()));
+  const auto create_executor = [&](void)
+      -> absl::StatusOr<
+          std::unique_ptr<LlmLiteRtCompiledModelExecutorStatic>> {
+    auto executor_settings =
+        LlmExecutorSettings::CreateDefault(model_assets, Backend::CPU);
+    executor_settings->SetCacheDir(":nocache");
+    executor_settings->SetMaxNumTokens(kMaxNumTokens);
+    ::litert::lm::CpuConfig config;
+    config.number_of_threads = kNumThreads;
+    executor_settings->SetBackendConfig(config);
+    return LlmLiteRtCompiledModelExecutorStatic::Create(
+        *executor_settings, env, *model_resources);
+  };
+  ASSERT_OK_AND_ASSIGN(auto prefill_executor, create_executor());
+  ASSERT_OK_AND_ASSIGN(auto decode_executor, create_executor());
+  ASSERT_NE(prefill_executor, nullptr);
+  ASSERT_NE(decode_executor, nullptr);
+
+  const auto prefill_same_prompt = [&](LlmLiteRtCompiledModelExecutorStatic& executor) {
+    ExecutorInputs inputs;
+    const std::vector<int> input_tokens = {1, 2, 0};
+    LITERT_ASSERT_OK_AND_ASSIGN(
+        auto input_tokens_buffer,
+        CopyToTensorBuffer<int>(absl::MakeSpan(input_tokens), {1, 3}));
+    inputs.SetTextData(ExecutorTextData(std::move(input_tokens_buffer)));
+    EXPECT_OK(executor.Prefill(inputs));
+  };
+
+  LITERT_ASSERT_OK_AND_ASSIGN(auto output_tokens,
+                              CreateTensorBuffer<int>({1, 1}));
+
+  prefill_same_prompt(*prefill_executor);
+  ASSERT_OK_AND_ASSIGN(auto handoff,
+                       prefill_executor->ExportPrefillDecodeHandoff(
+                           /*last_prefill_token_id=*/0));
+  EXPECT_OK(decode_executor->ImportPrefillDecodeHandoff(handoff));
+  EXPECT_OK(decode_executor->Decode(output_tokens));
+  EXPECT_TRUE(decode_executor->sampler_handles_input_for_testing());
+
+  auto first_pass_tokens = ReferTensorBufferAsSpan<int>(output_tokens);
+  ASSERT_TRUE(first_pass_tokens);
+  ASSERT_EQ(first_pass_tokens->size(), 1);
+  EXPECT_EQ(first_pass_tokens->at(0), 8005);
+
+  EXPECT_OK(decode_executor->Reset());
+  EXPECT_FALSE(decode_executor->sampler_handles_input_for_testing());
+}
+
 TEST(LlmLiteRtCompiledModelExecutorStaticTest, ConstrainedDecodeTest) {
   auto model_path =
       std::filesystem::path(::testing::SrcDir()) / kTestStaticModelPath;

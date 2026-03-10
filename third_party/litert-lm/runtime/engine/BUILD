@@ -255,6 +255,29 @@ cc_test(
     ],
 )
 
+cc_library(
+    name = "visual_token_budget_controller",
+    srcs = ["visual_token_budget_controller.cc"],
+    hdrs = ["visual_token_budget_controller.h"],
+    deps = [
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "visual_token_budget_controller_test",
+    srcs = ["visual_token_budget_controller_test.cc"],
+    deps = [
+        ":visual_token_budget_controller",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_absl//absl/status",
+    ],
+)
+
 cc_binary(
     name = "litert_lm_main",
     srcs = ["litert_lm_main.cc"],
@@ -384,6 +407,7 @@ cc_binary(
         ":litert_lm_settings_util",
         ":overlap_scheduler",
         ":request_preparation_queue",
+        ":visual_token_budget_controller",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/flags:parse",
         "@com_google_absl//absl/log:absl_check",

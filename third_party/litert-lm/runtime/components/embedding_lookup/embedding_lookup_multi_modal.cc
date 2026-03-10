@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "absl/status/status.h"  // from @com_google_absl
@@ -34,6 +35,66 @@
 #include "runtime/util/status_macros.h"  //NOLINT
 
 namespace litert::lm {
+namespace {
+
+absl::Status ValidateTokenIndices(absl::Span<const int> token_indices,
+                                  int total_tokens) {
+  if (token_indices.empty()) {
+    return absl::InvalidArgumentError(
+        "selected_token_indices must contain at least one token.");
+  }
+  int previous_index = -1;
+  for (const int token_index : token_indices) {
+    if (token_index < 0 || token_index >= total_tokens) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "selected token index ", token_index, " is out of range [0, ",
+          total_tokens, ")."));
+    }
+    if (token_index <= previous_index) {
+      return absl::InvalidArgumentError(
+          "selected_token_indices must be strictly increasing.");
+    }
+    previous_index = token_index;
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<size_t> GetSourceFloatsPerToken(
+    const ::litert::TensorBuffer& embedding_buffer,
+    absl::Span<const float> base_embedding) {
+  LITERT_ASSIGN_OR_RETURN(auto tensor_type, embedding_buffer.TensorType());
+  const auto& dims = tensor_type.Layout().Dimensions();
+  if (dims.size() < 2) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Fused projection-prune-pack requires vision embeddings with rank >= 2,"
+        " but got rank ", dims.size(), "."));
+  }
+  const size_t token_axis = dims.size() - 2;
+  int64_t outer_groups = 1;
+  for (size_t index = 0; index < token_axis; ++index) {
+    outer_groups *= dims[index];
+  }
+  if (outer_groups != 1) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "Fused projection-prune-pack does not support embedding layouts with "
+        "outer_groups=",
+        outer_groups,
+        ". Expected the token axis to be contiguous in memory."));
+  }
+  const int total_tokens = dims[token_axis];
+  if (total_tokens <= 0) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Fused projection-prune-pack requires a positive token axis, but got ",
+        total_tokens, "."));
+  }
+  if (base_embedding.size() % static_cast<size_t>(total_tokens) != 0) {
+    return absl::InvalidArgumentError(
+        "Embedding buffer size is incompatible with the source token count.");
+  }
+  return base_embedding.size() / static_cast<size_t>(total_tokens);
+}
+
+}  // namespace
 
 absl::Status EmbeddingLookupMultiModal::LookupDecode(
     int token, std::vector<float>& output_vector) {
@@ -60,6 +121,27 @@ absl::Status EmbeddingLookupMultiModal::LookupPrefill(
   // then use the result for the next step. At that point, it does not have a
   // TfLiteTensor to store the result in.
   if (token != special_token_) {
+    return absl::OkStatus();
+  }
+
+  if (selected_token_indices_.has_value()) {
+    if (source_floats_per_token_ != output_vector.size()) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Selected-token multimodal embedding width ",
+          source_floats_per_token_,
+          " does not match requested vector width ",
+          output_vector.size(), "."));
+    }
+    if (next_selected_token_index_ >= selected_token_indices_->size()) {
+      return absl::InvalidArgumentError(
+          "The selected-token embedding buffer is not large enough to contain "
+          "the number of requested tokens.");
+    }
+    const size_t source_offset =
+        static_cast<size_t>((*selected_token_indices_)[next_selected_token_index_++]) *
+        source_floats_per_token_;
+    std::memcpy(output_vector.data(), base_embedding_.data() + source_offset,
+                output_vector.size() * sizeof(float));
     return absl::OkStatus();
   }
 
@@ -144,17 +226,37 @@ absl::Status EmbeddingLookupMultiModal::LookupPrefill(
   output_tensor_ptr += byte_offset;
   for (int token : tokens) {
     if (token == special_token_) {
-      // Check if we have enough embeddings left to be read to cover the next
-      // token.
-      if (embedding_.size() < floats_per_token) {
-        return absl::InvalidArgumentError(
-            "The embedding buffer is not large enough to contain the number of "
-            "requested tokens.");
+      if (selected_token_indices_.has_value()) {
+        if (source_floats_per_token_ != floats_per_token) {
+          return absl::InvalidArgumentError(absl::StrCat(
+              "Selected-token multimodal embedding width ",
+              source_floats_per_token_,
+              " does not match requested tensor width ", floats_per_token,
+              "."));
+        }
+        if (next_selected_token_index_ >= selected_token_indices_->size()) {
+          return absl::InvalidArgumentError(
+              "The selected-token embedding buffer is not large enough to "
+              "contain the number of requested tokens.");
+        }
+        const size_t source_offset = static_cast<size_t>(
+                                         (*selected_token_indices_)[next_selected_token_index_++]) *
+                                     source_floats_per_token_;
+        std::memcpy(output_tensor_ptr, base_embedding_.data() + source_offset,
+                    bytes_per_token);
+      } else {
+        // Check if we have enough embeddings left to be read to cover the next
+        // token.
+        if (embedding_.size() < floats_per_token) {
+          return absl::InvalidArgumentError(
+              "The embedding buffer is not large enough to contain the number "
+              "of requested tokens.");
+        }
+        // Copy the embedding data to the output tensor.
+        std::memcpy(output_tensor_ptr, embedding_.data(), bytes_per_token);
+        // Remove used embeddings from the buffer.
+        embedding_ = embedding_.subspan(floats_per_token);
       }
-      // Copy the embedding data to the output tensor.
-      std::memcpy(output_tensor_ptr, embedding_.data(), bytes_per_token);
-      // Remove used embeddings from the buffer.
-      embedding_ = embedding_.subspan(floats_per_token);
     }
     output_tensor_ptr += bytes_per_token;
   }
@@ -163,23 +265,39 @@ absl::Status EmbeddingLookupMultiModal::LookupPrefill(
 
 absl::StatusOr<std::unique_ptr<EmbeddingLookupMultiModal>>
 EmbeddingLookupMultiModal::Create(
-    const ::litert::TensorBuffer* embedding_buffer, int special_token) {
+    const ::litert::TensorBuffer* embedding_buffer, int special_token,
+    std::optional<std::vector<int>> selected_token_indices) {
   auto handler = std::make_unique<EmbeddingLookupMultiModal>();
-  RETURN_IF_ERROR(handler->Initialize(embedding_buffer, special_token));
+  RETURN_IF_ERROR(handler->Initialize(embedding_buffer, special_token,
+                                      std::move(selected_token_indices)));
   return handler;
 }
 
 absl::Status EmbeddingLookupMultiModal::Initialize(
-    const ::litert::TensorBuffer* embedding_buffer, int special_token) {
+    const ::litert::TensorBuffer* embedding_buffer, int special_token,
+    std::optional<std::vector<int>> selected_token_indices) {
   if (embedding_buffer == nullptr) {
     return absl::InvalidArgumentError(
         "Cannot initialize embedding lookup with an embedding buffer that is "
         "null.");
   }
   LITERT_ASSIGN_OR_RETURN(
-      embedding_,
+      base_embedding_,
       ::litert::lm::ReferTensorBufferAsSpan<float>(*embedding_buffer));
+  embedding_ = base_embedding_;
   special_token_ = special_token;
+  selected_token_indices_ = std::move(selected_token_indices);
+  next_selected_token_index_ = 0;
+  source_floats_per_token_ = 0;
+  if (selected_token_indices_.has_value()) {
+    LITERT_ASSIGN_OR_RETURN(source_floats_per_token_,
+                            GetSourceFloatsPerToken(*embedding_buffer,
+                                                    base_embedding_));
+    LITERT_ASSIGN_OR_RETURN(auto tensor_type, embedding_buffer->TensorType());
+    RETURN_IF_ERROR(ValidateTokenIndices(
+        *selected_token_indices_,
+        tensor_type.Layout().Dimensions()[tensor_type.Layout().Rank() - 2]));
+  }
   return absl::OkStatus();
 }
 

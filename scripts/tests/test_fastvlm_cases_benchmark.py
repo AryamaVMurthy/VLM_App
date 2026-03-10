@@ -35,7 +35,7 @@ class ParseRunLogTest(unittest.TestCase):
             (TransformerStackOnly) Decode tokens per second: 109.598
             Total decode mask inference latency [us]: 13498 (4.95381%)
             I0000 00:00:1772535590.111111   27108 session_basic.cc:177] Applied visual token budget: kept 96 of 576 projected vision tokens.
-            I0000 00:00:1772535590.111222   27108 session_basic.cc:178] Visual token pruning decision: strategy=prompt_conditioned_v1 kept=96 original=576 mean_prompt_similarity=0.8125 mean_salience=0.4375 selected_token_indices=[1,4,9,12]
+            I0000 00:00:1772535590.111222   27108 session_basic.cc:178] Visual token pruning decision: strategy=prompt_conditioned_v1 kept=96 original=576 mean_prompt_similarity=0.8125 mean_salience=0.4375 mean_reference_prompt_similarity=0.78125 mean_reference_salience=0.40625 local_refinement_count=3 proposed_local_refinement_count=4 local_refinement_candidate_count=5 mean_local_refinement_prompt_gain=0.0625 max_local_refinement_prompt_gain=0.125 controller_kept_uniform=false controller_reason=none selected_token_indices=[1,4,9,12] reference_token_indices=[0,4,8,12] request_id=q1
             """
         ).strip()
         with tempfile.NamedTemporaryFile("w", delete=False) as handle:
@@ -60,7 +60,17 @@ class ParseRunLogTest(unittest.TestCase):
         self.assertEqual(metrics["visual_token_pruning_strategy"], "prompt_conditioned_v1")
         self.assertEqual(metrics["mean_prompt_similarity"], 0.8125)
         self.assertEqual(metrics["mean_salience"], 0.4375)
+        self.assertEqual(metrics["mean_reference_prompt_similarity"], 0.78125)
+        self.assertEqual(metrics["mean_reference_salience"], 0.40625)
+        self.assertEqual(metrics["local_refinement_count"], 3)
+        self.assertEqual(metrics["proposed_local_refinement_count"], 4)
+        self.assertEqual(metrics["local_refinement_candidate_count"], 5)
+        self.assertEqual(metrics["mean_local_refinement_prompt_gain"], 0.0625)
+        self.assertEqual(metrics["max_local_refinement_prompt_gain"], 0.125)
+        self.assertFalse(metrics["controller_kept_uniform"])
+        self.assertEqual(metrics["controller_reason"], "none")
         self.assertEqual(metrics["selected_token_indices"], [1, 4, 9, 12])
+        self.assertEqual(metrics["reference_token_indices"], [0, 4, 8, 12])
 
     def test_summarize_results_groups_by_budget(self):
         module = load_module()

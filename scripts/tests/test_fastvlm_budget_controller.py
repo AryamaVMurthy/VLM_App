@@ -58,6 +58,23 @@ class BudgetControllerTest(unittest.TestCase):
                 recent_decode_ms=None,
             )
 
+    def test_choose_visual_token_budget_limits_per_request_step_change(self):
+        module = load_module()
+
+        decision = module.choose_visual_token_budget(
+            [32, 64, 128, 256],
+            queue_depth=8,
+            queued_image_count=8,
+            recent_prefill_ms=450.0,
+            recent_decode_ms=200.0,
+            previous_budget=256,
+            max_step_change=1,
+            answer_mode="short",
+        )
+
+        self.assertEqual(decision.budget, 128)
+        self.assertIn("limited_step_change", decision.reason_codes)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -290,15 +290,27 @@ class ExecutorVisionData {
   absl::StatusOr<const ::litert::TensorBuffer*> GetPerLayerEmbeddingsPtr()
       const;
   absl::StatusOr<::litert::TensorBuffer*> GetMutablePerLayerEmbeddingsPtr();
+  const std::optional<std::vector<int>>& GetSelectedTokenIndices() const {
+    return selected_token_indices_;
+  }
+  std::optional<std::vector<int>>& GetMutableSelectedTokenIndices() {
+    return selected_token_indices_;
+  }
 
   // Setters:
   void SetEmbeddings(std::optional<::litert::TensorBuffer>&& embeddings);
   void SetPerLayerEmbeddings(
       std::optional<::litert::TensorBuffer>&& per_layer_embeddings);
+  void SetSelectedTokenIndices(const std::vector<int>& selected_token_indices);
+  void SetSelectedTokenIndices(std::vector<int>&& selected_token_indices);
+  void SetSelectedTokenIndices(
+      std::optional<std::vector<int>>&& selected_token_indices);
+  void ClearSelectedTokenIndices();
 
  private:
   std::optional<::litert::TensorBuffer> embeddings_;
   std::optional<::litert::TensorBuffer> per_layer_embeddings_;
+  std::optional<std::vector<int>> selected_token_indices_;
 };
 std::ostream& operator<<(std::ostream& os,
                          const ExecutorVisionData& vision_data);

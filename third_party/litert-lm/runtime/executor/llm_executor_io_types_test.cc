@@ -104,6 +104,7 @@ TEST(LlmExecutorIoTypesTest, ExecutorVisionDataPrint) {
                                                           // this way
       "  PerLayerEmbeddings: nullopt "
       "(ExecutorVisionData::per_layer_embeddings_ is not set.)\n"
+      "  SelectedTokenIndices: nullopt\n"
       "}";
   EXPECT_EQ(oss.str(), expected_output);
 }
@@ -429,6 +430,13 @@ TEST(LlmExecutorIoTypesTest, ExecutorVisionDataGetSet) {
   EXPECT_EQ(ple_read_data[1], 40.0f);
   EXPECT_EQ(ple_read_data[2], 41.0f);
   EXPECT_EQ(ple_read_data[3], 42.0f);
+
+  vision_data.SetSelectedTokenIndices(std::vector<int>{1, 3, 5});
+  ASSERT_TRUE(vision_data.GetSelectedTokenIndices().has_value());
+  EXPECT_EQ(*vision_data.GetSelectedTokenIndices(),
+            std::vector<int>({1, 3, 5}));
+  vision_data.ClearSelectedTokenIndices();
+  EXPECT_FALSE(vision_data.GetSelectedTokenIndices().has_value());
 }
 
 TEST(LlmExecutorIoTypesTest, ExecutorAudioDataGetSet) {

@@ -66,6 +66,7 @@ EmbeddingLookupManager::Create(
 
 absl::Status EmbeddingLookupManager::UpdateMultiModalEmbeddings(
     const ::litert::lm::ExecutorInputs& inputs) {
+  auto vision_data = inputs.GetVisionDataPtr();
   auto vision_embeddings = inputs.GetVisionEmbeddingsPtr();
   if (vision_embeddings.ok() && *vision_embeddings != nullptr) {
     if (!fully_supports_multi_modal_) {
@@ -74,8 +75,15 @@ absl::Status EmbeddingLookupManager::UpdateMultiModalEmbeddings(
           "must not be provided. Their entries will be default to the 0th "
           "embedding value of the text embedding table.");
     }
+    std::optional<std::vector<int>> selected_token_indices = std::nullopt;
+    if (vision_data.ok() &&
+        vision_data.value()->GetSelectedTokenIndices().has_value()) {
+      selected_token_indices =
+          *vision_data.value()->GetSelectedTokenIndices();
+    }
     auto vision_embedding_lookup = EmbeddingLookupMultiModal::Create(
-        *vision_embeddings, ::litert::lm::ExecutorVisionData::kSpecialToken);
+        *vision_embeddings, ::litert::lm::ExecutorVisionData::kSpecialToken,
+        std::move(selected_token_indices));
     if (!vision_embedding_lookup.ok()) {
       return vision_embedding_lookup.status();
     }

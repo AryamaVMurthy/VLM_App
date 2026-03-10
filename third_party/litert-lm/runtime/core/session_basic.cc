@@ -14,8 +14,10 @@
 
 #include "runtime/core/session_basic.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <optional>
 #include <string>
@@ -31,7 +33,12 @@
 #include "absl/memory/memory.h"  // from @com_google_absl
 #include "absl/status/status.h"  // from @com_google_absl
 #include "absl/status/statusor.h"  // from @com_google_absl
+#include "absl/strings/ascii.h"  // from @com_google_absl
+#include "absl/strings/match.h"  // from @com_google_absl
+#include "absl/strings/numbers.h"  // from @com_google_absl
+#include "absl/strings/str_join.h"  // from @com_google_absl
 #include "absl/strings/str_cat.h"  // from @com_google_absl
+#include "absl/strings/strip.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "absl/synchronization/mutex.h"  // from @com_google_absl
 #include "litert/cc/litert_layout.h"  // from @litert
@@ -64,6 +71,63 @@ namespace {
 
 using TaskController = Engine::Session::TaskController;
 
+absl::Status ApplyFloatPruningOverride(absl::string_view env_name,
+                                       float& destination) {
+  const char* value = std::getenv(std::string(env_name).c_str());
+  if (value == nullptr || value[0] == '\0') {
+    return absl::OkStatus();
+  }
+  float parsed_value = 0.0f;
+  if (!absl::SimpleAtof(value, &parsed_value)) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Invalid float value for ", env_name, ": '", value, "'."));
+  }
+  destination = parsed_value;
+  ABSL_LOG(INFO) << "Applied visual token pruning override " << env_name
+                 << "=" << parsed_value;
+  return absl::OkStatus();
+}
+
+absl::Status ApplyIntPruningOverride(absl::string_view env_name,
+                                     int& destination) {
+  const char* value = std::getenv(std::string(env_name).c_str());
+  if (value == nullptr || value[0] == '\0') {
+    return absl::OkStatus();
+  }
+  int parsed_value = 0;
+  if (!absl::SimpleAtoi(value, &parsed_value)) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Invalid int value for ", env_name, ": '", value, "'."));
+  }
+  destination = parsed_value;
+  ABSL_LOG(INFO) << "Applied visual token pruning override " << env_name
+                 << "=" << parsed_value;
+  return absl::OkStatus();
+}
+
+absl::Status ApplyBoolPruningOverride(absl::string_view env_name,
+                                      bool& destination) {
+  const char* value = std::getenv(std::string(env_name).c_str());
+  if (value == nullptr || value[0] == '\0') {
+    return absl::OkStatus();
+  }
+  const absl::string_view normalized(value);
+  if (normalized == "1" || absl::EqualsIgnoreCase(normalized, "true") ||
+      absl::EqualsIgnoreCase(normalized, "yes")) {
+    destination = true;
+  } else if (normalized == "0" ||
+             absl::EqualsIgnoreCase(normalized, "false") ||
+             absl::EqualsIgnoreCase(normalized, "no")) {
+    destination = false;
+  } else {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Invalid bool value for ", env_name, ": '", value, "'."));
+  }
+  ABSL_LOG(INFO) << "Applied visual token pruning override " << env_name
+                 << "=" << (destination ? "true" : "false");
+  return absl::OkStatus();
+}
+
 absl::StatusOr<VisionTokenPruningConfig> CreateVisionTokenPruningConfig(
     const SessionConfig& session_config) {
   VisionTokenPruningConfig config;
@@ -71,14 +135,68 @@ absl::StatusOr<VisionTokenPruningConfig> CreateVisionTokenPruningConfig(
       config.strategy,
       ParseVisionTokenPruningStrategy(
           session_config.GetVisualTokenPruningStrategy()));
+  RETURN_IF_ERROR(ApplyFloatPruningOverride(
+      "LITERT_LM_PRUNING_PROMPT_SIMILARITY_WEIGHT",
+      config.prompt_similarity_weight));
+  RETURN_IF_ERROR(ApplyFloatPruningOverride(
+      "LITERT_LM_PRUNING_SALIENCE_WEIGHT", config.salience_weight));
+  RETURN_IF_ERROR(ApplyFloatPruningOverride(
+      "LITERT_LM_PRUNING_REDUNDANCY_PENALTY_WEIGHT",
+      config.redundancy_penalty_weight));
+  RETURN_IF_ERROR(ApplyFloatPruningOverride(
+      "LITERT_LM_PRUNING_PROMPT_ATTENTION_LOGIT_SCALE",
+      config.prompt_attention_logit_scale));
+  RETURN_IF_ERROR(ApplyIntPruningOverride(
+      "LITERT_LM_PRUNING_PROMPT_ATTENTION_TOP_K",
+      config.prompt_attention_top_k));
+  RETURN_IF_ERROR(ApplyFloatPruningOverride(
+      "LITERT_LM_PRUNING_LOCAL_REFINEMENT_MIN_PROMPT_GAIN",
+      config.local_refinement_min_prompt_gain));
+  RETURN_IF_ERROR(ApplyFloatPruningOverride(
+      "LITERT_LM_PRUNING_MAX_LOCAL_REFINEMENT_FRACTION",
+      config.max_local_refinement_fraction));
+  RETURN_IF_ERROR(ApplyFloatPruningOverride(
+      "LITERT_LM_PRUNING_MAX_LOCAL_REFINEMENT_SALIENCE_DROP",
+      config.max_local_refinement_salience_drop));
+  RETURN_IF_ERROR(ApplyFloatPruningOverride(
+      "LITERT_LM_PRUNING_MIN_GLOBAL_MEAN_PROMPT_SIMILARITY",
+      config.min_global_mean_prompt_similarity));
+  RETURN_IF_ERROR(ApplyFloatPruningOverride(
+      "LITERT_LM_PRUNING_MIN_GLOBAL_MEAN_SALIENCE",
+      config.min_global_mean_salience));
+  RETURN_IF_ERROR(ApplyBoolPruningOverride(
+      "LITERT_LM_PRUNING_FUSE_PROJECTION_PRUNE_PACK",
+      config.fuse_projection_prune_pack));
   return config;
 }
 
 bool UsesPromptConditionedPruning(
     const std::optional<VisionTokenPruningConfig>& pruning_config) {
   return pruning_config.has_value() &&
-         pruning_config->strategy ==
-             VisionTokenPruningStrategy::kPromptConditionedV1;
+         (pruning_config->strategy ==
+              VisionTokenPruningStrategy::kPromptConditionedV1 ||
+          pruning_config->strategy ==
+              VisionTokenPruningStrategy::kPromptConditionedV2);
+}
+
+bool IsVisionSummaryLoggingEnabled() {
+  const char* value = std::getenv("LITERT_LM_DEBUG_VISION_SUMMARY");
+  if (value == nullptr) {
+    return false;
+  }
+  const absl::string_view normalized(value);
+  return normalized == "1" || absl::EqualsIgnoreCase(normalized, "true") ||
+         absl::EqualsIgnoreCase(normalized, "yes");
+}
+
+bool IsDetailedHandoffLoggingEnabled() {
+  const char* value = std::getenv("LITERT_LM_DEBUG_HANDOFF_DETAIL");
+  if (value == nullptr) {
+    return false;
+  }
+  const absl::string_view normalized(value);
+  return normalized == "1" || absl::EqualsIgnoreCase(normalized, "true") ||
+         absl::EqualsIgnoreCase(normalized, "yes");
 }
 
 absl::Status AppendTextTokenEmbeddingsToCache(
@@ -118,6 +236,151 @@ absl::Status AppendTextTokenEmbeddingsToCache(
     ++cached_text_embeddings.token_count;
   }
   return cached_text_embeddings.Validate();
+}
+
+absl::string_view ExtractPromptConditioningText(absl::string_view raw_text) {
+  raw_text = absl::StripAsciiWhitespace(raw_text);
+  if (!absl::StartsWithIgnoreCase(raw_text, "Question:")) {
+    return raw_text;
+  }
+  raw_text.remove_prefix(std::string_view("Question:").size());
+  raw_text = absl::StripLeadingAsciiWhitespace(raw_text);
+  const size_t newline = raw_text.find('\n');
+  if (newline != absl::string_view::npos) {
+    raw_text = raw_text.substr(0, newline);
+  }
+  return absl::StripAsciiWhitespace(raw_text);
+}
+
+absl::StatusOr<std::optional<CachedTextEmbeddings>>
+BuildPromptConditioningCacheFromContents(
+    const std::vector<InputData>& contents, Tokenizer& tokenizer,
+    EmbeddingLookupManager& embedding_lookup_manager) {
+  std::optional<CachedTextEmbeddings> cached_text_embeddings = std::nullopt;
+  for (const auto& content : contents) {
+    const auto* input_text = std::get_if<InputText>(&content);
+    if (input_text == nullptr) {
+      continue;
+    }
+
+    std::vector<int> token_ids;
+    if (input_text->IsTensorBuffer()) {
+      ASSIGN_OR_RETURN(const auto* token_ids_tensor,
+                       input_text->GetPreprocessedTextTensor());
+      LITERT_ASSIGN_OR_RETURN(auto token_ids_span,
+                              ReferTensorBufferAsSpan<int>(*token_ids_tensor));
+      token_ids.assign(token_ids_span.begin(), token_ids_span.end());
+    } else {
+      ASSIGN_OR_RETURN(absl::string_view raw_text,
+                       input_text->GetRawTextString());
+      const absl::string_view conditioning_text =
+          ExtractPromptConditioningText(raw_text);
+      if (conditioning_text.empty()) {
+        continue;
+      }
+      ASSIGN_OR_RETURN(token_ids, tokenizer.TextToTokenIds(conditioning_text));
+    }
+    if (token_ids.empty()) {
+      continue;
+    }
+    if (!cached_text_embeddings.has_value()) {
+      cached_text_embeddings = CachedTextEmbeddings();
+    }
+    RETURN_IF_ERROR(AppendTextTokenEmbeddingsToCache(
+        embedding_lookup_manager, token_ids, *cached_text_embeddings));
+  }
+  return cached_text_embeddings;
+}
+
+uint64_t HashBytes(absl::Span<const uint8_t> bytes) {
+  constexpr uint64_t kFnvOffset = 1469598103934665603ULL;
+  constexpr uint64_t kFnvPrime = 1099511628211ULL;
+  uint64_t hash = kFnvOffset;
+  for (uint8_t byte : bytes) {
+    hash ^= byte;
+    hash *= kFnvPrime;
+  }
+  return hash;
+}
+
+absl::StatusOr<std::string> SummarizeTensorBuffer(
+    const ::litert::TensorBuffer& tensor) {
+  LITERT_ASSIGN_OR_RETURN(auto tensor_type, tensor.TensorType());
+  LITERT_ASSIGN_OR_RETURN(auto packed_size, tensor.PackedSize());
+  LITERT_ASSIGN_OR_RETURN(auto tensor_copy, tensor.Duplicate());
+  std::vector<uint8_t> bytes(packed_size);
+  if (auto read_status = tensor_copy.Read(absl::MakeSpan(bytes));
+      !read_status.HasValue()) {
+    return absl::InternalError(read_status.Error().Message());
+  }
+  return absl::StrCat("bytes=", packed_size, " hash=", HashBytes(bytes),
+                      " dims=[",
+                      absl::StrJoin(tensor_type.Layout().Dimensions(), ","),
+                      "] elem_type=",
+                      static_cast<int>(tensor_type.ElementType()));
+}
+
+std::string SummarizeCachedTextEmbeddings(
+    const CachedTextEmbeddings& cached_text_embeddings) {
+  const auto* begin =
+      reinterpret_cast<const uint8_t*>(cached_text_embeddings.values.data());
+  const size_t byte_count =
+      cached_text_embeddings.values.size() * sizeof(float);
+  return absl::StrCat("token_count=", cached_text_embeddings.token_count,
+                      " floats_per_token=",
+                      cached_text_embeddings.floats_per_token, " bytes=",
+                      byte_count, " hash=",
+                      HashBytes(absl::MakeConstSpan(begin, byte_count)));
+}
+
+absl::StatusOr<std::string> SummarizePrefillDecodeHandoff(
+    const PrefillDecodeHandoff& handoff) {
+  const auto* processed_begin =
+      reinterpret_cast<const uint8_t*>(handoff.processed_token_ids.data());
+  const size_t processed_bytes =
+      handoff.processed_token_ids.size() * sizeof(int);
+  const uint64_t processed_hash =
+      HashBytes(absl::MakeConstSpan(processed_begin, processed_bytes));
+
+  std::vector<std::string> cache_names;
+  cache_names.reserve(handoff.kv_cache_buffers.size());
+  for (const auto& [cache_name, _] : handoff.kv_cache_buffers) {
+    cache_names.push_back(cache_name);
+  }
+  std::sort(cache_names.begin(), cache_names.end());
+
+  constexpr uint64_t kFnvPrime = 1099511628211ULL;
+  uint64_t kv_hash = 1469598103934665603ULL;
+  for (const std::string& cache_name : cache_names) {
+    const auto it = handoff.kv_cache_buffers.find(cache_name);
+    if (it == handoff.kv_cache_buffers.end()) {
+      return absl::InternalError(
+          absl::StrCat("Missing KV cache buffer while summarizing handoff: ",
+                       cache_name));
+    }
+    ASSIGN_OR_RETURN(const std::string tensor_summary,
+                     SummarizeTensorBuffer(it->second));
+    const auto* name_bytes =
+        reinterpret_cast<const uint8_t*>(cache_name.data());
+    kv_hash ^= HashBytes(
+        absl::MakeConstSpan(name_bytes, cache_name.size()));
+    kv_hash *= kFnvPrime;
+    const auto* summary_bytes =
+        reinterpret_cast<const uint8_t*>(tensor_summary.data());
+    kv_hash ^= HashBytes(
+        absl::MakeConstSpan(summary_bytes, tensor_summary.size()));
+    kv_hash *= kFnvPrime;
+  }
+
+  return absl::StrCat("current_step=", handoff.current_step,
+                      " last_prefill_token_id=",
+                      handoff.last_prefill_token_id,
+                      " processed_token_count=",
+                      handoff.processed_token_ids.size(),
+                      " processed_token_hash=", processed_hash,
+                      " pending_token_id=", handoff.pending_token_id,
+                      " kv_cache_count=", handoff.kv_cache_buffers.size(),
+                      " kv_cache_hash=", kv_hash);
 }
 
 }
@@ -203,11 +466,13 @@ SessionBasic::~SessionBasic() {
 }
 
 absl::StatusOr<ExecutorInputs> SessionBasic::ProcessAndCombineContents(
-    const std::vector<InputData>& preprocessed_contents) {
+    const std::vector<InputData>& preprocessed_contents,
+    const CachedTextEmbeddings* prompt_conditioning_cache) {
   std::vector<int> combined_token_ids;
   std::vector<ExecutorVisionData> all_image_data;
   std::vector<ExecutorAudioData> all_audio_data;
-  std::optional<CachedTextEmbeddings> cached_text_embeddings = std::nullopt;
+  std::optional<CachedTextEmbeddings> prefill_cached_text_embeddings =
+      std::nullopt;
   std::optional<VisionTokenPruningConfig> pruning_config = std::nullopt;
   if (session_config_.GetMaxVisualTokens() > 0) {
     ASSIGN_OR_RETURN(pruning_config,
@@ -227,13 +492,18 @@ absl::StatusOr<ExecutorInputs> SessionBasic::ProcessAndCombineContents(
       combined_token_ids.insert(combined_token_ids.end(),
                                 ids_buffer_span.begin(), ids_buffer_span.end());
       if (UsesPromptConditionedPruning(pruning_config)) {
-        if (prompt_embedding_lookup_manager_ == nullptr) {
-          return absl::FailedPreconditionError(
-              "prompt_conditioned_v1 requires the real FastVLM text embedder, "
-              "but no prompt embedding lookup manager is available.");
+        if (prompt_embedding_lookup_manager_ == nullptr &&
+            prompt_conditioning_cache == nullptr) {
+          return absl::FailedPreconditionError(absl::StrCat(
+              VisionTokenPruningStrategyToString(pruning_config->strategy),
+              " requires the real FastVLM text embedder, but no prompt "
+              "embedding lookup manager is available."));
         }
-        if (!cached_text_embeddings.has_value()) {
-          cached_text_embeddings = CachedTextEmbeddings();
+        if (prompt_embedding_lookup_manager_ == nullptr) {
+          continue;
+        }
+        if (!prefill_cached_text_embeddings.has_value()) {
+          prefill_cached_text_embeddings = CachedTextEmbeddings();
         }
         if (benchmark_info_.has_value()) {
           RETURN_IF_ERROR(
@@ -241,7 +511,7 @@ absl::StatusOr<ExecutorInputs> SessionBasic::ProcessAndCombineContents(
         }
         RETURN_IF_ERROR(AppendTextTokenEmbeddingsToCache(
             *prompt_embedding_lookup_manager_, ids_buffer_span,
-            *cached_text_embeddings));
+            *prefill_cached_text_embeddings));
         if (benchmark_info_.has_value()) {
           RETURN_IF_ERROR(
               benchmark_info_->TimeMarkDelta("prompt_text_embedder"));
@@ -262,6 +532,25 @@ absl::StatusOr<ExecutorInputs> SessionBasic::ProcessAndCombineContents(
                        vision_executor_->Encode(*image_tensor));
       const int max_visual_tokens = session_config_.GetMaxVisualTokens();
       if (max_visual_tokens > 0) {
+        if (!debug_request_id_.empty() && IsVisionSummaryLoggingEnabled()) {
+          ASSIGN_OR_RETURN(const auto* vision_embeddings,
+                           single_image_data.GetEmbeddingsPtr());
+          ASSIGN_OR_RETURN(const std::string vision_summary,
+                           SummarizeTensorBuffer(*vision_embeddings));
+          ABSL_LOG(INFO) << "Vision embedding summary: " << vision_summary
+                         << " request_id=" << debug_request_id_;
+          if (prompt_conditioning_cache != nullptr) {
+            ABSL_LOG(INFO) << "Prompt conditioning cache summary: "
+                           << SummarizeCachedTextEmbeddings(
+                                  *prompt_conditioning_cache)
+                           << " request_id=" << debug_request_id_;
+          } else if (prefill_cached_text_embeddings.has_value()) {
+            ABSL_LOG(INFO) << "Prompt conditioning cache summary: "
+                           << SummarizeCachedTextEmbeddings(
+                                  *prefill_cached_text_embeddings)
+                           << " request_id=" << debug_request_id_;
+          }
+        }
         ASSIGN_OR_RETURN(const int original_image_token_num,
                          GetExecutorVisionTokenCount(single_image_data));
         if (benchmark_info_.has_value()) {
@@ -270,9 +559,13 @@ absl::StatusOr<ExecutorInputs> SessionBasic::ProcessAndCombineContents(
         ASSIGN_OR_RETURN(
             auto pruned_image_data,
             PruneExecutorVisionData(single_image_data, max_visual_tokens,
-                                    cached_text_embeddings.has_value()
-                                        ? &cached_text_embeddings.value()
-                                        : nullptr,
+                                    prompt_conditioning_cache != nullptr
+                                        ? prompt_conditioning_cache
+                                        : (prefill_cached_text_embeddings
+                                                   .has_value()
+                                               ? &prefill_cached_text_embeddings
+                                                      .value()
+                                               : nullptr),
                                     *pruning_config));
         single_image_data = std::move(pruned_image_data.vision_data);
         if (benchmark_info_.has_value()) {
@@ -283,9 +576,27 @@ absl::StatusOr<ExecutorInputs> SessionBasic::ProcessAndCombineContents(
         ABSL_LOG(INFO) << "Applied visual token budget: kept "
                        << pruned_image_token_num << " of "
                        << original_image_token_num
-                       << " projected vision tokens.";
+                       << " projected vision tokens."
+                       << (debug_request_id_.empty()
+                               ? ""
+                               : absl::StrCat(" request_id=",
+                                              debug_request_id_));
         ABSL_LOG(INFO) << "Visual token pruning decision: "
-                       << pruned_image_data.decision.ToLogString();
+                       << pruned_image_data.decision.ToLogString()
+                       << (debug_request_id_.empty()
+                               ? ""
+                               : absl::StrCat(" request_id=",
+                                              debug_request_id_));
+        if (pruning_config->fuse_projection_prune_pack &&
+            single_image_data.GetSelectedTokenIndices().has_value()) {
+          ABSL_LOG(INFO)
+              << "Using fused projection-prune-pack sparse token view: kept "
+              << single_image_data.GetSelectedTokenIndices()->size()
+              << " projected tokens without materializing a sliced tensor."
+              << (debug_request_id_.empty()
+                      ? ""
+                      : absl::StrCat(" request_id=", debug_request_id_));
+        }
       }
       if (benchmark_info_.has_value()) {
         RETURN_IF_ERROR(benchmark_info_->TimeMarkDelta("vision_executor"));
@@ -339,9 +650,12 @@ absl::StatusOr<ExecutorInputs> SessionBasic::ProcessAndCombineContents(
   ASSIGN_OR_RETURN(auto token_ids_buffer,
                    tokenizer_.TokenIdsToTensorBuffer(combined_token_ids));
   ExecutorTextData text_data(std::move(token_ids_buffer));
-  if (cached_text_embeddings.has_value()) {
-    RETURN_IF_ERROR(cached_text_embeddings->Validate());
-    text_data.SetCachedTextEmbeddings(std::move(*cached_text_embeddings));
+  if (prefill_cached_text_embeddings.has_value()) {
+    RETURN_IF_ERROR(prefill_cached_text_embeddings->Validate());
+    // Prompt-conditioned pruning uses real prompt embeddings for scoring only.
+    // Do not attach them to the executor inputs, otherwise the pruning path
+    // changes text-embedding execution and no longer matches the uniform path
+    // when token selections are identical.
   }
   ExecutorInputs inputs(std::move(text_data), std::move(combined_image_data),
                         std::move(combined_audio_data));
@@ -350,9 +664,11 @@ absl::StatusOr<ExecutorInputs> SessionBasic::ProcessAndCombineContents(
 
 absl::Status SessionBasic::PrefillInternal(
     const std::vector<InputData>& preprocessed_contents,
-    bool wait_for_completion) {
+    bool wait_for_completion,
+    const CachedTextEmbeddings* prompt_conditioning_cache) {
   ASSIGN_OR_RETURN(ExecutorInputs inputs,
-                   ProcessAndCombineContents(preprocessed_contents));
+                   ProcessAndCombineContents(preprocessed_contents,
+                                            prompt_conditioning_cache));
   ASSIGN_OR_RETURN(
       last_prefill_token_id_,
       Prefill(executor_, inputs, wait_for_completion, benchmark_info_));
@@ -383,7 +699,8 @@ absl::Status SessionBasic::FinalizeDecodePromptIfNeeded() {
                    PreprocessContents(templated_contents, session_config_,
                                       tokenizer_, benchmark_info_));
   RETURN_IF_ERROR(
-      PrefillInternal(preprocessed_contents, /*wait_for_completion=*/true));
+      PrefillInternal(preprocessed_contents, /*wait_for_completion=*/true,
+                      /*prompt_conditioning_cache=*/nullptr));
   decode_prompt_finalized_ = true;
   return absl::OkStatus();
 }
@@ -400,6 +717,17 @@ absl::Status SessionBasic::RunPrefill(const std::vector<InputData>& contents) {
   if (cancelled_.load()) {
     // Reset the cancelled flag before processing the next turn.
     cancelled_ = false;
+  }
+  std::optional<CachedTextEmbeddings> prompt_conditioning_cache = std::nullopt;
+  if (session_config_.GetMaxVisualTokens() > 0) {
+    ASSIGN_OR_RETURN(auto pruning_config,
+                     CreateVisionTokenPruningConfig(session_config_));
+    if (UsesPromptConditionedPruning(pruning_config) &&
+        prompt_embedding_lookup_manager_ != nullptr) {
+      ASSIGN_OR_RETURN(prompt_conditioning_cache,
+                       BuildPromptConditioningCacheFromContents(
+                           contents, tokenizer_, *prompt_embedding_lookup_manager_));
+    }
   }
   std::vector<InputData> preprocessed_contents;
   if (benchmark_info_.has_value()) {
@@ -434,8 +762,10 @@ absl::Status SessionBasic::RunPrefill(const std::vector<InputData>& contents) {
         benchmark_info_->TimeMarkDelta("session_preprocess_contents"));
   }
 
-  return PrefillInternal(preprocessed_contents,
-                         /*wait_for_completion=*/true);
+  return PrefillInternal(
+      preprocessed_contents, /*wait_for_completion=*/true,
+      prompt_conditioning_cache.has_value() ? &*prompt_conditioning_cache
+                                            : nullptr);
 }
 
 absl::StatusOr<std::unique_ptr<TaskController>> SessionBasic::RunPrefillAsync(
@@ -452,6 +782,17 @@ absl::StatusOr<std::unique_ptr<TaskController>> SessionBasic::RunPrefillAsync(
   if (cancelled_.load()) {
     // Reset the cancelled flag before processing the next turn.
     cancelled_ = false;
+  }
+  std::optional<CachedTextEmbeddings> prompt_conditioning_cache = std::nullopt;
+  if (session_config_.GetMaxVisualTokens() > 0) {
+    ASSIGN_OR_RETURN(auto pruning_config,
+                     CreateVisionTokenPruningConfig(session_config_));
+    if (UsesPromptConditionedPruning(pruning_config) &&
+        prompt_embedding_lookup_manager_ != nullptr) {
+      ASSIGN_OR_RETURN(prompt_conditioning_cache,
+                       BuildPromptConditioningCacheFromContents(
+                           contents, tokenizer_, *prompt_embedding_lookup_manager_));
+    }
   }
   std::vector<InputData> preprocessed_contents;
   if (benchmark_info_.has_value()) {
@@ -487,9 +828,13 @@ absl::StatusOr<std::unique_ptr<TaskController>> SessionBasic::RunPrefillAsync(
   }
   RETURN_IF_ERROR(worker_thread_pool_.Schedule(
       [this, preprocessed_contents = std::move(preprocessed_contents),
+       prompt_conditioning_cache = std::move(prompt_conditioning_cache),
        callback = std::move(callback)]() mutable {
         absl::Status status = this->PrefillInternal(
-            preprocessed_contents, /*wait_for_completion=*/false);
+            preprocessed_contents, /*wait_for_completion=*/false,
+            prompt_conditioning_cache.has_value()
+                ? &*prompt_conditioning_cache
+                : nullptr);
         ABSL_LOG(INFO) << "RunPrefillAsync status: " << status;
         if (cancelled_.load()) {
           callback(
@@ -578,7 +923,36 @@ absl::StatusOr<PrefillDecodeHandoff> SessionBasic::ExportPrefillDecodeHandoff() 
         "Session must be prefilled before exporting decode handoff.");
   }
   RETURN_IF_ERROR(FinalizeDecodePromptIfNeeded());
-  return executor_.ExportPrefillDecodeHandoff(last_prefill_token_id_);
+  ASSIGN_OR_RETURN(auto handoff,
+                   executor_.ExportPrefillDecodeHandoff(last_prefill_token_id_));
+  if (!debug_request_id_.empty()) {
+    ASSIGN_OR_RETURN(const std::string handoff_summary,
+                     SummarizePrefillDecodeHandoff(handoff));
+    ABSL_LOG(INFO) << "Exported prefill handoff summary: " << handoff_summary
+                   << " request_id=" << debug_request_id_;
+    if (IsDetailedHandoffLoggingEnabled()) {
+      std::vector<std::string> cache_names;
+      cache_names.reserve(handoff.kv_cache_buffers.size());
+      for (const auto& [cache_name, _] : handoff.kv_cache_buffers) {
+        cache_names.push_back(cache_name);
+      }
+      std::sort(cache_names.begin(), cache_names.end());
+      for (const std::string& cache_name : cache_names) {
+        const auto it = handoff.kv_cache_buffers.find(cache_name);
+        if (it == handoff.kv_cache_buffers.end()) {
+          return absl::InternalError(
+              absl::StrCat("Missing KV cache buffer while logging handoff: ",
+                           cache_name));
+        }
+        ASSIGN_OR_RETURN(const std::string tensor_summary,
+                         SummarizeTensorBuffer(it->second));
+        ABSL_LOG(INFO) << "Exported prefill handoff tensor: name="
+                       << cache_name << " " << tensor_summary
+                       << " request_id=" << debug_request_id_;
+      }
+    }
+  }
+  return handoff;
 }
 
 absl::Status SessionBasic::ImportPrefillDecodeHandoff(
@@ -601,6 +975,7 @@ absl::Status SessionBasic::ResetForReuse() {
   last_prefill_token_id_ = 0;
   decode_prompt_finalized_ = false;
   session_state_ = SessionState::kFresh;
+  debug_request_id_.clear();
   return absl::OkStatus();
 }
 

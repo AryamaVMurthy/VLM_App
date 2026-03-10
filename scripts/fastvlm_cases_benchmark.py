@@ -33,9 +33,47 @@ PRUNING_DECISION_PATTERN = re.compile(
     r"Visual token pruning decision: strategy=(?P<strategy>[a-zA-Z0-9_]+) "
     r"kept=(?P<kept>\d+) original=(?P<original>\d+) "
     r"mean_prompt_similarity=(?P<mean_prompt_similarity>[-0-9.eE]+) "
-    r"mean_salience=(?P<mean_salience>[-0-9.eE]+) "
-    r"selected_token_indices=(?P<selected_token_indices>\[[^\]]*\])"
+    r"mean_salience=(?P<mean_salience>[-0-9.eE]+)"
 )
+PRUNING_FLOAT_FIELD_PATTERNS = {
+    "mean_reference_prompt_similarity": re.compile(
+        r"mean_reference_prompt_similarity=(?P<value>[-0-9.eE]+)"
+    ),
+    "mean_reference_salience": re.compile(
+        r"mean_reference_salience=(?P<value>[-0-9.eE]+)"
+    ),
+    "mean_local_refinement_prompt_gain": re.compile(
+        r"mean_local_refinement_prompt_gain=(?P<value>[-0-9.eE]+)"
+    ),
+    "max_local_refinement_prompt_gain": re.compile(
+        r"max_local_refinement_prompt_gain=(?P<value>[-0-9.eE]+)"
+    ),
+}
+PRUNING_INT_FIELD_PATTERNS = {
+    "local_refinement_count": re.compile(r"local_refinement_count=(?P<value>\d+)"),
+    "proposed_local_refinement_count": re.compile(
+        r"proposed_local_refinement_count=(?P<value>\d+)"
+    ),
+    "local_refinement_candidate_count": re.compile(
+        r"local_refinement_candidate_count=(?P<value>\d+)"
+    ),
+}
+PRUNING_BOOL_FIELD_PATTERNS = {
+    "controller_kept_uniform": re.compile(
+        r"controller_kept_uniform=(?P<value>true|false)"
+    ),
+}
+PRUNING_STRING_FIELD_PATTERNS = {
+    "controller_reason": re.compile(r"controller_reason=(?P<value>[^ ]+)")
+}
+PRUNING_INDEX_FIELD_PATTERNS = {
+    "selected_token_indices": re.compile(
+        r"selected_token_indices=(?P<value>\[[^\]]*\])"
+    ),
+    "reference_token_indices": re.compile(
+        r"reference_token_indices=(?P<value>\[[^\]]*\])"
+    ),
+}
 STAT_PATTERNS = {
     "prefill_latency_us": re.compile(r"Total prefill latency \[us\]: (?P<value>\d+)"),
     "prefill_tokens": re.compile(r"\(e2e\) Prefill num tokens: (?P<value>\d+)"),
@@ -79,6 +117,45 @@ def extract_run_log_path(stdout_text: str) -> Path:
     return Path(match.group("path")).expanduser().resolve()
 
 
+def parse_pruning_decision_line(line: str) -> dict[str, object] | None:
+    match = PRUNING_DECISION_PATTERN.search(line)
+    if match is None:
+        return None
+    metrics: dict[str, object] = {
+        "visual_token_pruning_strategy": match.group("strategy"),
+        "mean_prompt_similarity": float(match.group("mean_prompt_similarity")),
+        "mean_salience": float(match.group("mean_salience")),
+    }
+    for field, pattern in PRUNING_FLOAT_FIELD_PATTERNS.items():
+        field_match = pattern.search(line)
+        if field_match is not None:
+            metrics[field] = float(field_match.group("value"))
+    for field, pattern in PRUNING_INT_FIELD_PATTERNS.items():
+        field_match = pattern.search(line)
+        if field_match is not None:
+            metrics[field] = int(field_match.group("value"))
+    for field, pattern in PRUNING_BOOL_FIELD_PATTERNS.items():
+        field_match = pattern.search(line)
+        if field_match is not None:
+            metrics[field] = field_match.group("value") == "true"
+    for field, pattern in PRUNING_STRING_FIELD_PATTERNS.items():
+        field_match = pattern.search(line)
+        if field_match is not None:
+            metrics[field] = field_match.group("value")
+    for field, pattern in PRUNING_INDEX_FIELD_PATTERNS.items():
+        field_match = pattern.search(line)
+        if field_match is None:
+            continue
+        raw_indices = field_match.group("value").strip("[]")
+        metrics[field] = [] if not raw_indices else [
+            int(item) for item in raw_indices.split(",") if item
+        ]
+    request_id_match = re.search(r"request_id=(?P<value>[^ ]+)$", line.strip())
+    if request_id_match is not None:
+        metrics["request_id"] = request_id_match.group("value")
+    return metrics
+
+
 def parse_run_log(log_path: Path) -> dict[str, object]:
     text = log_path.read_text(encoding="utf-8", errors="replace")
     metrics: dict[str, object] = {
@@ -120,19 +197,21 @@ def parse_run_log(log_path: Path) -> dict[str, object]:
         metrics["visual_tokens_kept"] = int(budget_match.group("kept"))
         metrics["visual_tokens_original"] = int(budget_match.group("original"))
 
-    pruning_decision_match = PRUNING_DECISION_PATTERN.search(text)
+    pruning_decision_line = next(
+        (
+            line
+            for line in text.splitlines()
+            if "Visual token pruning decision:" in line
+        ),
+        None,
+    )
+    pruning_decision_match = (
+        PRUNING_DECISION_PATTERN.search(pruning_decision_line)
+        if pruning_decision_line is not None
+        else None
+    )
     if pruning_decision_match is not None:
-        metrics["visual_token_pruning_strategy"] = pruning_decision_match.group("strategy")
-        metrics["mean_prompt_similarity"] = float(
-            pruning_decision_match.group("mean_prompt_similarity")
-        )
-        metrics["mean_salience"] = float(pruning_decision_match.group("mean_salience"))
-        raw_indices = pruning_decision_match.group("selected_token_indices").strip("[]")
-        metrics["selected_token_indices"] = (
-            []
-            if not raw_indices
-            else [int(item) for item in raw_indices.split(",") if item]
-        )
+        metrics.update(parse_pruning_decision_line(pruning_decision_line) or {})
 
     for field, pattern in STAT_PATTERNS.items():
         match = pattern.search(text)

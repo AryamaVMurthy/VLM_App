@@ -26,6 +26,7 @@ JOBS=6
 SKIP_BUILD=0
 SKIP_PUSH=0
 IMAGE_HOST_PATH=""
+FORWARD_ENV_ASSIGNMENTS=()
 
 usage() {
   cat <<'EOF'
@@ -48,6 +49,8 @@ Options:
   --skip-build 0|1      Skip Bazel build steps (default: 0)
   --skip-push 0|1       Skip adb push steps (default: 0)
   --device-dir PATH     Device run directory (default: /data/local/tmp/vlm_phase1)
+  --forward-env NAME=VALUE
+                       Forward host pruning env override into the device shell
   -h, --help            Show help
 
 Notes:
@@ -126,6 +129,10 @@ while [[ $# -gt 0 ]]; do
       refresh_device_paths
       shift 2
       ;;
+    --forward-env)
+      FORWARD_ENV_ASSIGNMENTS+=("${2:-}")
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -178,6 +185,17 @@ if [[ "${SKIP_PUSH}" != "0" && "${SKIP_PUSH}" != "1" ]]; then
   echo "Invalid --skip-push (expected 0 or 1): ${SKIP_PUSH}" >&2
   exit 2
 fi
+for forwarded_env in "${FORWARD_ENV_ASSIGNMENTS[@]}"; do
+  if [[ "${forwarded_env}" != *=* ]]; then
+    echo "Invalid --forward-env (expected NAME=VALUE): ${forwarded_env}" >&2
+    exit 2
+  fi
+  env_name="${forwarded_env%%=*}"
+  if [[ ! "${env_name}" =~ ^LITERT_LM_PRUNING_[A-Z0-9_]+$ ]]; then
+    echo "Invalid --forward-env name (expected LITERT_LM_PRUNING_*): ${env_name}" >&2
+    exit 2
+  fi
+done
 
 if [[ ! -f "${MODEL_HOST_PATH}" ]]; then
   echo "Missing model artifact: ${MODEL_HOST_PATH}" >&2
@@ -314,6 +332,12 @@ EVENT_MODE_EXPORT=""
 if [[ "${EVENT_MODE}" == "1" ]]; then
   EVENT_MODE_EXPORT="export LITERT_LM_EVENT_MODE=1 &&"
 fi
+FORWARD_ENV_EXPORT=""
+for forwarded_env in "${FORWARD_ENV_ASSIGNMENTS[@]}"; do
+  env_name="${forwarded_env%%=*}"
+  env_value="${forwarded_env#*=}"
+  FORWARD_ENV_EXPORT+="export ${env_name}=$(shell_single_quote "${env_value}") && "
+done
 DEVICE_DIR_QUOTED="$(shell_single_quote "${DEVICE_DIR}")"
 DEVICE_MODEL_PATH_QUOTED="$(shell_single_quote "${DEVICE_MODEL_PATH}")"
 DEVICE_INPUT_PROMPT_QUOTED="$(shell_single_quote "${PROMPT} [image:${DEVICE_IMAGE_PATH}]")"
@@ -329,6 +353,7 @@ adb shell "cd ${DEVICE_DIR_QUOTED} && \
   export LD_LIBRARY_PATH=${LD_LIBRARY_PATH_QUOTED} && \
   export ADSP_LIBRARY_PATH=${ADSP_LIBRARY_PATH_QUOTED} && \
   ${EVENT_MODE_EXPORT} \
+  ${FORWARD_ENV_EXPORT} \
   ./litert_lm_advanced_main \
     --backend=npu \
     --vision_backend=npu \

@@ -38,6 +38,19 @@ DEFAULT_VISUAL_TOKEN_PRUNING_STRATEGY = "prompt_conditioned_v1"
 DEFAULT_MAX_OUTPUT_TOKENS = 12
 DEFAULT_MAX_VISUAL_TOKENS = 96
 DEFAULT_GQA_SHORT_ANSWER_REGEX = ""
+SUPPORTED_PRUNING_ENV_VARS = (
+    "LITERT_LM_PRUNING_PROMPT_SIMILARITY_WEIGHT",
+    "LITERT_LM_PRUNING_SALIENCE_WEIGHT",
+    "LITERT_LM_PRUNING_REDUNDANCY_PENALTY_WEIGHT",
+    "LITERT_LM_PRUNING_PROMPT_ATTENTION_LOGIT_SCALE",
+    "LITERT_LM_PRUNING_PROMPT_ATTENTION_TOP_K",
+    "LITERT_LM_PRUNING_LOCAL_REFINEMENT_MIN_PROMPT_GAIN",
+    "LITERT_LM_PRUNING_MAX_LOCAL_REFINEMENT_FRACTION",
+    "LITERT_LM_PRUNING_MAX_LOCAL_REFINEMENT_SALIENCE_DROP",
+    "LITERT_LM_PRUNING_MIN_GLOBAL_MEAN_PROMPT_SIMILARITY",
+    "LITERT_LM_PRUNING_MIN_GLOBAL_MEAN_SALIENCE",
+    "LITERT_LM_PRUNING_FUSE_PROJECTION_PRUNE_PACK",
+)
 
 
 @dataclass(frozen=True)
@@ -91,6 +104,7 @@ def build_runner_command(
     skip_push: bool,
     image_path: Path | None = None,
     device_dir: str = DEFAULT_DEVICE_DIR,
+    pruning_env_overrides: dict[str, str] | None = None,
 ) -> list[str]:
     command = [
         str(runner_script),
@@ -115,11 +129,24 @@ def build_runner_command(
         "--device-dir",
         device_dir,
     ]
+    if pruning_env_overrides:
+        for env_name, env_value in pruning_env_overrides.items():
+            command.extend(["--forward-env", f"{env_name}={env_value}"])
     if constraint_regex:
         command.extend(["--constraint-regex", constraint_regex])
     if image_path is not None:
         command.extend(["--image", str(image_path)])
     return command
+
+
+def collect_pruning_env_overrides(env: dict[str, str] | None = None) -> dict[str, str]:
+    source = os.environ if env is None else env
+    overrides: dict[str, str] = {}
+    for env_name in SUPPORTED_PRUNING_ENV_VARS:
+        env_value = source.get(env_name)
+        if env_value:
+            overrides[env_name] = env_value
+    return overrides
 
 
 def run_command(command: list[str], env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -278,6 +305,7 @@ def main() -> int:
 
     rows: list[dict[str, Any]] = []
     base_env = os.environ.copy()
+    pruning_env_overrides = collect_pruning_env_overrides(base_env)
     first_sample = True
 
     for index, sample in enumerate(samples, start=1):
@@ -304,6 +332,7 @@ def main() -> int:
                 skip_push=False,
                 image_path=image_path,
                 device_dir=args.device_dir,
+                pruning_env_overrides=pruning_env_overrides,
             )
         else:
             adb_push_image(image_path, args.device_image_path)
@@ -319,6 +348,7 @@ def main() -> int:
                 skip_push=True,
                 image_path=None,
                 device_dir=args.device_dir,
+                pruning_env_overrides=pruning_env_overrides,
             )
         result = run_command(command, env=base_env)
         run_log_path = require_successful_run(result)

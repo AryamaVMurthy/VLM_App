@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -34,12 +35,19 @@
 #include "litert/cc/litert_tensor_buffer.h"  // from @litert
 #include "litert/cc/litert_tensor_buffer_types.h"  // from @litert
 #include "litert/test/matchers.h"  // from @litert
+#include "runtime/util/test_utils.h"  // NOLINT
 
 namespace litert::lm {
 
 class EmbeddingLookupMultiModalTest : public testing::Test {
  protected:
   std::unique_ptr<EmbeddingLookupMultiModal> GetEmbeddingLookupMultiModal() {
+    return GetEmbeddingLookupMultiModalWithSelection(std::nullopt);
+  }
+
+  std::unique_ptr<EmbeddingLookupMultiModal>
+  GetEmbeddingLookupMultiModalWithSelection(
+      std::optional<std::vector<int>> selected_token_indices) {
     static struct alignas(::litert::kHostMemoryBufferAlignment) {
       float d[24] = {1.0,  2.0,  3.0,  4.0,  5.0,  6.0,  7.0,  8.0,
                      9.0,  10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
@@ -49,13 +57,13 @@ class EmbeddingLookupMultiModalTest : public testing::Test {
     auto buffer = ::litert::TensorBuffer::CreateFromHostMemory(
         ::litert::RankedTensorType(
             ::litert::ElementType::Float32,
-            ::litert::Layout(::litert::Dimensions({4, 2, 3}))),
+            ::litert::Layout(::litert::Dimensions({1, 1, 4, 6}))),
         data.d, 24 * sizeof(float));
     EXPECT_TRUE(buffer.HasValue());
     buffer_ = std::move(buffer.Value());
 
-    auto embedding_lookup =
-        EmbeddingLookupMultiModal::Create(&buffer_, special_token_);
+    auto embedding_lookup = EmbeddingLookupMultiModal::Create(
+        &buffer_, special_token_, std::move(selected_token_indices));
     EXPECT_TRUE(embedding_lookup.ok());
     return std::move(embedding_lookup.value());
   }
@@ -238,6 +246,28 @@ TEST_F(EmbeddingLookupMultiModalTest, LookupPrefillMultipleSpecialTokens) {
       ASSERT_EQ(output_tensor_ptr[i], 0.0);
     }
   }
+}
+
+TEST_F(EmbeddingLookupMultiModalTest,
+       LookupPrefillUsesSelectedTokenIndicesWhenPresent) {
+  std::unique_ptr<EmbeddingLookupMultiModal> embedding =
+      GetEmbeddingLookupMultiModalWithSelection(std::vector<int>{1, 3});
+  ASSERT_NE(embedding, nullptr);
+
+  ::litert::Dimensions dimensions({1, 2, 2, 3});
+  LITERT_ASSERT_OK_AND_ASSIGN(litert::TensorBuffer output_tensor,
+                              GetTensorBuffer(dimensions));
+  std::vector<int> tokens = {special_token_, special_token_};
+  ASSERT_OK(
+      embedding->LookupPrefill(absl::MakeConstSpan(tokens), &output_tensor, 0));
+
+  auto output_tensor_lock_and_addr = ::litert::TensorBufferScopedLock::Create(
+      output_tensor, ::litert::TensorBuffer::LockMode::kRead);
+  auto output_tensor_ptr =
+      reinterpret_cast<float*>(output_tensor_lock_and_addr->second);
+  EXPECT_THAT(std::vector<float>(output_tensor_ptr, output_tensor_ptr + 12),
+              testing::ElementsAre(7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 19.0, 20.0,
+                                   21.0, 22.0, 23.0, 24.0));
 }
 
 TEST_F(EmbeddingLookupMultiModalTest, LookupPrefillLargerOutputTensor) {

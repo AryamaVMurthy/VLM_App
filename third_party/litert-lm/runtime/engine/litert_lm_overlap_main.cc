@@ -12,17 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
 #include <filesystem>  // NOLINT
 #include <exception>
 #include <fstream>
 #include <future>
-#include <memory>
 #include <optional>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
+#include <unistd.h>
 
 #include "absl/flags/flag.h"  // from @com_google_absl
 #include "absl/flags/parse.h"  // from @com_google_absl
@@ -33,7 +35,10 @@
 #include "absl/status/statusor.h"  // from @com_google_absl
 #include "absl/strings/match.h"  // from @com_google_absl
 #include "absl/strings/str_cat.h"  // from @com_google_absl
+#include "absl/strings/str_join.h"  // from @com_google_absl
+#include "absl/strings/str_split.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
+#include "absl/strings/numbers.h"  // from @com_google_absl
 #include "absl/synchronization/mutex.h"  // from @com_google_absl
 #include "absl/time/clock.h"  // from @com_google_absl
 #include "absl/time/time.h"  // from @com_google_absl
@@ -55,6 +60,7 @@
 #include "runtime/engine/litert_lm_settings_util.h"
 #include "runtime/engine/overlap_scheduler.h"
 #include "runtime/engine/request_preparation_queue.h"
+#include "runtime/engine/visual_token_budget_controller.h"
 #include "runtime/executor/litert_compiled_model_executor_utils.h"
 #include "runtime/executor/llm_executor.h"
 #include "runtime/executor/llm_litert_compiled_model_executor_factory.h"
@@ -62,6 +68,7 @@
 #include "runtime/executor/vision_executor.h"
 #include "runtime/executor/vision_litert_compiled_model_executor.h"
 #include "runtime/framework/threadpool.h"
+#include "runtime/util/executor_data_util.h"
 #include "runtime/util/status_macros.h"
 
 ABSL_FLAG(std::string, model_path, "", "Model path to use for overlap runs.");
@@ -87,6 +94,13 @@ ABSL_FLAG(std::string, constraint_regex, "",
 ABSL_FLAG(int, num_cpu_threads, 4, "Number of CPU threads for decode.");
 ABSL_FLAG(int, prepare_queue_size, 4,
           "Number of prepared requests to keep buffered ahead of prefill.");
+ABSL_FLAG(std::string, adaptive_visual_token_budgets, "",
+          "Optional comma-separated per-request visual token budget buckets. "
+          "When non-empty, the overlap runtime selects a budget for each "
+          "request based on queue pressure and rolling stage durations.");
+ABSL_FLAG(std::string, budget_controller_answer_mode, "none",
+          "Optional answer mode hint for the adaptive budget controller: "
+          "none, short, or long.");
 ABSL_FLAG(std::string, litert_dispatch_lib_dir, "",
           "Directory containing LiteRT Qualcomm dispatch/compiler libraries.");
 
@@ -136,6 +150,38 @@ std::string GetInputPrompt() {
     return buffer.str();
   }
   return "Describe this image in one sentence.";
+}
+
+absl::StatusOr<std::vector<int>> ParseAdaptiveVisualTokenBudgetsFlag(
+    absl::string_view raw_value) {
+  if (raw_value.empty()) {
+    return std::vector<int>{};
+  }
+  std::vector<int> parsed_budgets;
+  for (absl::string_view token :
+       absl::StrSplit(raw_value, ',', absl::SkipWhitespace())) {
+    if (token.empty()) {
+      continue;
+    }
+    int parsed_budget = 0;
+    if (!absl::SimpleAtoi(token, &parsed_budget)) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Invalid adaptive visual token budget '", token,
+          "' in --adaptive_visual_token_budgets=", raw_value));
+    }
+    if (parsed_budget <= 0) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Adaptive visual token budgets must be positive, got ",
+          parsed_budget));
+    }
+    parsed_budgets.push_back(parsed_budget);
+  }
+  if (parsed_budgets.empty()) {
+    return absl::InvalidArgumentError(
+        "--adaptive_visual_token_budgets did not contain any valid integer "
+        "entries.");
+  }
+  return parsed_budgets;
 }
 
 using QueuedRequest = RequestPreparationSpec;
@@ -356,8 +402,12 @@ CreatePromptEmbeddingLookupManager(ModelResources& model_resources,
   if (session_config.GetMaxVisualTokens() <= 0) {
     return std::unique_ptr<EmbeddingLookupManager>(nullptr);
   }
-  if (!absl::EqualsIgnoreCase(session_config.GetVisualTokenPruningStrategy(),
-                              "prompt_conditioned_v1")) {
+  ASSIGN_OR_RETURN(
+      const auto pruning_strategy,
+      ParseVisionTokenPruningStrategy(
+          session_config.GetVisualTokenPruningStrategy()));
+  if (pruning_strategy != VisionTokenPruningStrategy::kPromptConditionedV1 &&
+      pruning_strategy != VisionTokenPruningStrategy::kPromptConditionedV2) {
     return std::unique_ptr<EmbeddingLookupManager>(nullptr);
   }
   ASSIGN_OR_RETURN(const litert::Model * text_embedder_model,
@@ -541,17 +591,144 @@ absl::StatusOr<PreparedRequest> PrepareRequest(
 struct DecodeState {
   int request_index = -1;
   StageWindow decode_window;
+  StageWindow prefill_window;
+  std::optional<absl::Time> first_token_time;
   std::optional<std::string> text;
   std::optional<absl::Status> status;
 };
 
 struct PendingDecode {
   std::shared_ptr<DecodeState> state;
-  std::future<absl::StatusOr<Responses>> future;
+  std::future<absl::Status> future;
   std::thread worker;
 
   bool Valid() const { return state != nullptr; }
 };
+
+struct ProcessCpuSnapshot {
+  uint64_t user_ticks = 0;
+  uint64_t system_ticks = 0;
+  absl::Time timestamp;
+};
+
+struct HandoffTransferStats {
+  size_t kv_cache_count = 0;
+  uint64_t kv_cache_total_bytes = 0;
+  size_t processed_token_count = 0;
+  uint64_t processed_token_bytes = 0;
+};
+
+json BuildStageBackendEvent(absl::string_view stage,
+                            absl::string_view declared_backend,
+                            absl::string_view observed_backend,
+                            absl::string_view visibility,
+                            absl::string_view stage_unit,
+                            absl::string_view compile_artifact,
+                            absl::string_view source,
+                            absl::string_view note = "") {
+  json event = {
+      {"type", "STAGE_BACKEND"},
+      {"stage", stage},
+      {"declared_backend", declared_backend},
+      {"observed_backend", observed_backend},
+      {"visibility", visibility},
+      {"stage_unit", stage_unit},
+      {"compile_artifact", compile_artifact},
+      {"source", source},
+  };
+  if (!note.empty()) {
+    event["note"] = std::string(note);
+  }
+  return event;
+}
+
+absl::StatusOr<ProcessCpuSnapshot> ReadProcessCpuSnapshot() {
+  std::ifstream file("/proc/self/stat");
+  if (!file.is_open()) {
+    return absl::NotFoundError("Could not open /proc/self/stat.");
+  }
+  std::string line;
+  std::getline(file, line);
+  if (line.empty()) {
+    return absl::InternalError("Could not read /proc/self/stat.");
+  }
+  const size_t right_paren = line.rfind(')');
+  if (right_paren == std::string::npos || right_paren + 2 >= line.size()) {
+    return absl::InternalError(
+        absl::StrCat("Unexpected /proc/self/stat format: ", line));
+  }
+  std::istringstream remainder(line.substr(right_paren + 2));
+  std::vector<std::string> fields;
+  std::string field;
+  while (remainder >> field) {
+    fields.push_back(field);
+  }
+  if (fields.size() <= 12) {
+    return absl::InternalError(
+        absl::StrCat("Too few /proc/self/stat fields: ", fields.size()));
+  }
+  ProcessCpuSnapshot snapshot;
+  snapshot.user_ticks = std::stoull(fields[11]);
+  snapshot.system_ticks = std::stoull(fields[12]);
+  snapshot.timestamp = absl::Now();
+  return snapshot;
+}
+
+json BuildProcessCpuSummaryEvent(const ProcessCpuSnapshot& start_snapshot,
+                                 const ProcessCpuSnapshot& end_snapshot) {
+  json event = {{"type", "PROCESS_CPU_SUMMARY"},
+                {"process_id", getpid()},
+                {"wall_time_ms",
+                 absl::ToDoubleMilliseconds(end_snapshot.timestamp -
+                                            start_snapshot.timestamp)}};
+  const long ticks_per_second = sysconf(_SC_CLK_TCK);
+  const long online_cpu_count = sysconf(_SC_NPROCESSORS_ONLN);
+  if (ticks_per_second <= 0 || online_cpu_count <= 0) {
+    event["cpu_summary_available"] = false;
+    event["cpu_summary_reason"] = "sysconf_unavailable";
+    return event;
+  }
+  const double user_cpu_ms =
+      1000.0 * static_cast<double>(end_snapshot.user_ticks -
+                                   start_snapshot.user_ticks) /
+      static_cast<double>(ticks_per_second);
+  const double system_cpu_ms =
+      1000.0 * static_cast<double>(end_snapshot.system_ticks -
+                                   start_snapshot.system_ticks) /
+      static_cast<double>(ticks_per_second);
+  const double wall_time_ms =
+      absl::ToDoubleMilliseconds(end_snapshot.timestamp - start_snapshot.timestamp);
+  const double cpu_time_ms = user_cpu_ms + system_cpu_ms;
+  const double core_equivalent =
+      wall_time_ms > 0.0 ? cpu_time_ms / wall_time_ms : 0.0;
+  const double utilization_total_capacity_percent =
+      wall_time_ms > 0.0 ? (100.0 * core_equivalent /
+                            static_cast<double>(online_cpu_count))
+                         : 0.0;
+  event["cpu_summary_available"] = true;
+  event["user_cpu_ms"] = user_cpu_ms;
+  event["system_cpu_ms"] = system_cpu_ms;
+  event["cpu_time_ms"] = cpu_time_ms;
+  event["avg_cpu_core_equivalent"] = core_equivalent;
+  event["online_cpu_count"] = online_cpu_count;
+  event["avg_cpu_util_percent_total_capacity"] =
+      utilization_total_capacity_percent;
+  return event;
+}
+
+absl::StatusOr<HandoffTransferStats> CollectHandoffTransferStats(
+    const PrefillDecodeHandoff& handoff) {
+  HandoffTransferStats stats;
+  stats.kv_cache_count = handoff.kv_cache_buffers.size();
+  stats.processed_token_count = handoff.processed_token_ids.size();
+  stats.processed_token_bytes =
+      handoff.processed_token_ids.size() * sizeof(int);
+  for (const auto& [_, buffer] : handoff.kv_cache_buffers) {
+    LITERT_ASSIGN_OR_RETURN(const size_t packed_size, buffer.PackedSize());
+    stats.kv_cache_total_bytes += packed_size;
+  }
+  return stats;
+}
 
 absl::StatusOr<std::unique_ptr<Constraint>> CreateRegexConstraint(
     const Tokenizer& tokenizer,
@@ -569,18 +746,43 @@ absl::StatusOr<std::unique_ptr<Constraint>> CreateRegexConstraint(
 
 PendingDecode StartDecode(SessionBasic& decode_session,
                           const PrefillDecodeHandoff& handoff,
+                          const QueuedRequest& request,
+                          const StageWindow& prefill_window,
                           const Tokenizer& tokenizer,
-                          absl::string_view constraint_regex,
-                          int request_index) {
+                          absl::string_view constraint_regex) {
   ABSL_CHECK_OK(decode_session.ResetForReuse());
+  decode_session.SetDebugRequestId(request.request_id);
   ABSL_CHECK_OK(decode_session.ImportPrefillDecodeHandoff(handoff));
-  auto promise = std::make_shared<std::promise<absl::StatusOr<Responses>>>();
+  auto promise = std::make_shared<std::promise<absl::Status>>();
   PendingDecode pending;
   pending.state = std::make_shared<DecodeState>();
   pending.future = promise->get_future();
-  pending.state->request_index = request_index;
+  pending.state->request_index = request.request_index;
+  pending.state->prefill_window = prefill_window;
+  if (IsEventModeEnabled()) {
+    const auto handoff_stats_or = CollectHandoffTransferStats(handoff);
+    if (handoff_stats_or.ok()) {
+      EmitEventLine({{"type", "HANDOFF_IMPORT"},
+                     {"request_index", request.request_index},
+                     {"request_id", request.request_id},
+                     {"kv_cache_buffer_count",
+                      handoff_stats_or->kv_cache_count},
+                     {"kv_cache_total_bytes",
+                      handoff_stats_or->kv_cache_total_bytes},
+                     {"processed_token_count",
+                      handoff_stats_or->processed_token_count},
+                     {"processed_token_bytes",
+                      handoff_stats_or->processed_token_bytes}});
+    } else {
+      EmitEventLine({{"type", "ERROR"},
+                     {"request_index", request.request_index},
+                     {"request_id", request.request_id},
+                     {"message", std::string(handoff_stats_or.status().message())}});
+    }
+  }
   pending.worker = std::thread([&decode_session, promise,
                                 &tokenizer,
+                                request,
                                 constraint_regex = std::string(constraint_regex),
                                 state = pending.state]() mutable {
     state->decode_window.start_time = absl::Now();
@@ -600,14 +802,69 @@ PendingDecode StartDecode(SessionBasic& decode_session,
         constraint = std::move(*constraint_or);
         decode_config.SetConstraint(constraint.get());
       }
-      auto responses = decode_session.RunDecode(decode_config);
-      state->decode_window.end_time = absl::Now();
-      if (responses.ok() && !responses->GetTexts().empty()) {
-        state->text = responses->GetTexts()[0];
-      } else if (!responses.ok()) {
-        state->status = responses.status();
+      auto callback =
+          [request, state](absl::StatusOr<Responses> responses) mutable {
+            const absl::Time callback_time = absl::Now();
+            if (!responses.ok()) {
+              state->decode_window.end_time = callback_time;
+              state->status = responses.status();
+              return;
+            }
+            if (!responses->GetTexts().empty()) {
+              const std::string& text_chunk = responses->GetTexts()[0];
+              if (!text_chunk.empty()) {
+                if (!state->first_token_time.has_value()) {
+                  state->first_token_time = callback_time;
+                  if (IsEventModeEnabled()) {
+                    EmitEventLine(
+                        {{"type", "FIRST_TOKEN"},
+                         {"request_index", request.request_index},
+                         {"request_id", request.request_id},
+                         {"text", text_chunk},
+                         {"timestamp_unix_nanos",
+                          absl::ToUnixNanos(callback_time)},
+                         {"ttft_ms",
+                          absl::ToDoubleMilliseconds(callback_time -
+                                                     state->prefill_window.start_time)},
+                         {"decode_first_token_latency_ms",
+                          absl::ToDoubleMilliseconds(callback_time -
+                                                     state->decode_window.start_time)}});
+                  }
+                }
+                if (state->text.has_value()) {
+                  state->text = absl::StrCat(*state->text, text_chunk);
+                } else {
+                  state->text = text_chunk;
+                }
+              }
+            }
+            if (IsTaskEndState(responses->GetTaskState())) {
+              state->decode_window.end_time = callback_time;
+              if (!state->status.has_value()) {
+                state->status = absl::OkStatus();
+              }
+            }
+          };
+      auto decode_status =
+          decode_session.RunDecodeAsync(std::move(callback), decode_config);
+      if (!decode_status.ok()) {
+        state->decode_window.end_time = absl::Now();
+        state->status = decode_status.status();
+        promise->set_value(decode_status.status());
+        return;
       }
-      promise->set_value(std::move(responses));
+      const absl::Status wait_status = decode_session.WaitUntilDone();
+      if (!wait_status.ok()) {
+        state->decode_window.end_time = absl::Now();
+        state->status = wait_status;
+        promise->set_value(wait_status);
+        return;
+      }
+      if (!state->status.has_value()) {
+        state->decode_window.end_time = absl::Now();
+        state->status = absl::OkStatus();
+      }
+      promise->set_value(absl::OkStatus());
     } catch (const std::exception& e) {
       state->decode_window.end_time = absl::Now();
       const absl::Status status = absl::InternalError(
@@ -629,9 +886,9 @@ PendingDecode StartDecode(SessionBasic& decode_session,
 
 absl::Status FinalizeDecode(PendingDecode& pending) {
   ABSL_CHECK(pending.Valid());
-  absl::StatusOr<Responses> responses;
+  absl::Status status;
   try {
-    responses = pending.future.get();
+    status = pending.future.get();
   } catch (const std::exception& e) {
     if (pending.worker.joinable()) {
       pending.worker.join();
@@ -652,8 +909,8 @@ absl::Status FinalizeDecode(PendingDecode& pending) {
   if (pending.worker.joinable()) {
     pending.worker.join();
   }
-  if (!responses.ok()) {
-    return responses.status();
+  if (!status.ok()) {
+    return status;
   }
   if (!pending.state->status.has_value()) {
     pending.state->status = absl::OkStatus();
@@ -661,12 +918,37 @@ absl::Status FinalizeDecode(PendingDecode& pending) {
   return absl::OkStatus();
 }
 
+void EmitDecodeDoneEvent(const PendingDecode& pending,
+                         const std::vector<QueuedRequest>& requests) {
+  if (!IsEventModeEnabled()) {
+    return;
+  }
+  EmitEventLine(
+      {{"type", "DECODE_DONE"},
+       {"request_index", pending.state->request_index},
+       {"request_id", requests[pending.state->request_index].request_id},
+       {"duration_ms",
+        absl::ToDoubleMilliseconds(
+            pending.state->decode_window.end_time -
+            pending.state->decode_window.start_time)},
+       {"timestamp_unix_nanos",
+        absl::ToUnixNanos(pending.state->decode_window.end_time)}});
+}
+
 absl::Status MainHelper(int argc, char** argv) {
   absl::ParseCommandLine(argc, argv);
+  ASSIGN_OR_RETURN(const ProcessCpuSnapshot process_start_snapshot,
+                   ReadProcessCpuSnapshot());
 
   const std::string model_path = absl::GetFlag(FLAGS_model_path);
   const std::string decode_model_path = absl::GetFlag(FLAGS_decode_model_path);
   const std::string constraint_regex = absl::GetFlag(FLAGS_constraint_regex);
+  ASSIGN_OR_RETURN(
+      const std::vector<int> adaptive_visual_token_budgets,
+      ParseAdaptiveVisualTokenBudgetsFlag(
+          absl::GetFlag(FLAGS_adaptive_visual_token_budgets)));
+  const std::string budget_controller_answer_mode =
+      absl::GetFlag(FLAGS_budget_controller_answer_mode);
   if (model_path.empty()) {
     return absl::InvalidArgumentError("--model_path must be provided.");
   }
@@ -714,6 +996,7 @@ absl::Status MainHelper(int argc, char** argv) {
                  << " decode=" << decode_settings.model_path;
   if (IsEventModeEnabled()) {
     EmitEventLine({{"type", "OVERLAP_CONFIG"},
+                   {"process_id", getpid()},
                    {"prefill_backend", "npu"},
                    {"decode_backend", "cpu"},
                    {"prefill_model_path", prefill_settings.model_path},
@@ -721,13 +1004,58 @@ absl::Status MainHelper(int argc, char** argv) {
                    {"queue_size", requests.size()},
                    {"prepare_queue_size", absl::GetFlag(FLAGS_prepare_queue_size)},
                    {"max_visual_tokens", common_settings.max_visual_tokens},
+                   {"adaptive_visual_token_budgets",
+                    adaptive_visual_token_budgets},
+                   {"budget_controller_answer_mode",
+                    budget_controller_answer_mode},
                    {"visual_token_pruning_strategy",
                     common_settings.visual_token_pruning_strategy}});
+    EmitEventLine(BuildStageBackendEvent(
+        "vision_encoder", "npu", "NPU_DISPATCHDELEGATE",
+        "opaque_dispatch_subgraph", "TF_LITE_VISION_ENCODER:sg0",
+        std::filesystem::path(prefill_settings.model_path).filename().string(),
+        "pinned_partition_map",
+        "Observed backend comes from the validated pinned Qualcomm artifact."));
+    EmitEventLine(BuildStageBackendEvent(
+        "vision_adapter", "artifact_pinned", "CPU_XNNPACK", "visible_per_op",
+        "TF_LITE_VISION_ADAPTER:sg0",
+        std::filesystem::path(prefill_settings.model_path).filename().string(),
+        "pinned_partition_map",
+        "Adapter/projection stays on CPU in the packaged FastVLM artifact."));
+    EmitEventLine(BuildStageBackendEvent(
+        "pruning_seam", "cpu_host", "CPU_HOST", "fully_visible",
+        "POST_PROJECTION_PRUNING_SEAM", "runtime",
+        "overlap_runtime_session_config",
+        "The pruning seam runs after projection packing and before prefill."));
+    EmitEventLine(BuildStageBackendEvent(
+        "prefill", "npu", "NPU_SESSION_WITH_DISPATCH_PREFILL_SG0",
+        "opaque_dispatch_subgraph", "TF_LITE_PREFILL_DECODE:sg0",
+        std::filesystem::path(prefill_settings.model_path).filename().string(),
+        "overlap_runtime_session_config",
+        "Prefill runs on the Qualcomm artifact with NPU session settings."));
+    EmitEventLine(BuildStageBackendEvent(
+        "decode", "cpu", "CPU_SESSION_RAW_FASTVLM", "runtime_visible",
+        "RAW_FASTVLM_CPU_DECODE",
+        std::filesystem::path(decode_settings.model_path).filename().string(),
+        "overlap_runtime_session_config",
+        "Decode is intentionally overridden to CPU in the overlap runtime."));
+    EmitEventLine(BuildStageBackendEvent(
+        "aux_mask", "artifact_pinned", "CPU_PARTIAL_XNNPACK_VISIBLE_AUX_MASK",
+        "partial_visible", "TF_LITE_AUX",
+        std::filesystem::path(prefill_settings.model_path).filename().string(),
+        "pinned_partition_map",
+        "Aux/mask visibility is partial; exact per-op mapping remains unresolved "
+        "for some AUX subgraphs."));
   }
 
   std::optional<PendingDecode> pending_decode = std::nullopt;
   std::vector<std::string> final_texts(requests.size());
   std::vector<StageWindow> prefill_windows(requests.size());
+  std::optional<double> recent_prefill_ms = std::nullopt;
+  std::optional<double> recent_decode_ms = std::nullopt;
+  std::optional<double> controller_prefill_ms = std::nullopt;
+  std::optional<double> controller_decode_ms = std::nullopt;
+  std::optional<int> previous_budget = std::nullopt;
 
   for (int i = 0; i < requests.size(); ++i) {
     const QueuedRequest& request = requests[i];
@@ -741,6 +1069,38 @@ absl::Status MainHelper(int argc, char** argv) {
     }
 
     RETURN_IF_ERROR(prefill_bundle.session->ResetForReuse());
+    prefill_bundle.session->SetVisualTokenPruningStrategy(
+        common_settings.visual_token_pruning_strategy);
+    int active_visual_token_budget = common_settings.max_visual_tokens;
+    std::vector<std::string> budget_reason_codes = {"fixed_budget"};
+    if (!adaptive_visual_token_budgets.empty()) {
+      ASSIGN_OR_RETURN(const auto budget_decision,
+                       ChooseVisualTokenBudget(
+                           adaptive_visual_token_budgets, queue_depth,
+                           /*queued_image_count=*/queue_depth,
+                           controller_prefill_ms, controller_decode_ms,
+                           budget_controller_answer_mode, previous_budget));
+      active_visual_token_budget = budget_decision.budget;
+      budget_reason_codes = budget_decision.reason_codes;
+    }
+    prefill_bundle.session->SetMaxVisualTokens(active_visual_token_budget);
+    if (IsEventModeEnabled()) {
+      EmitEventLine(
+          {{"type", "BUDGET_DECISION"},
+           {"request_index", i},
+           {"request_id", request.request_id},
+           {"selected_budget", active_visual_token_budget},
+           {"previous_budget", previous_budget.value_or(-1)},
+           {"queue_depth", queue_depth},
+           {"queued_image_count", queue_depth},
+           {"recent_prefill_ms", recent_prefill_ms.value_or(-1.0)},
+           {"recent_decode_ms", recent_decode_ms.value_or(-1.0)},
+           {"controller_prefill_ms", controller_prefill_ms.value_or(-1.0)},
+           {"controller_decode_ms", controller_decode_ms.value_or(-1.0)},
+           {"answer_mode", budget_controller_answer_mode},
+           {"reason_codes", budget_reason_codes}});
+    }
+    previous_budget = active_visual_token_budget;
     const absl::Time prepare_wait_start = absl::Now();
     ASSIGN_OR_RETURN(PreparedRequest prepared_request,
                      prepared_request_queue->PopNext());
@@ -771,6 +1131,7 @@ absl::Status MainHelper(int argc, char** argv) {
                      {"timestamp_unix_nanos",
                       absl::ToUnixNanos(prefill_windows[i].start_time)}});
     }
+    prefill_bundle.session->SetDebugRequestId(request.request_id);
     RETURN_IF_ERROR(
         prefill_bundle.session->RunPrefill(prepared_request.request_contents));
     prefill_windows[i].end_time = absl::Now();
@@ -778,14 +1139,33 @@ absl::Status MainHelper(int argc, char** argv) {
       EmitEventLine({{"type", "PREFILL_DONE"},
                      {"request_index", i},
                      {"request_id", request.request_id},
+                     {"active_visual_token_budget", active_visual_token_budget},
                      {"duration_ms", absl::ToDoubleMilliseconds(
                                          prefill_windows[i].end_time -
                                          prefill_windows[i].start_time)},
                      {"timestamp_unix_nanos",
                       absl::ToUnixNanos(prefill_windows[i].end_time)}});
     }
+    recent_prefill_ms = absl::ToDoubleMilliseconds(prefill_windows[i].end_time -
+                                                   prefill_windows[i].start_time);
+    controller_prefill_ms = controller_prefill_ms.has_value()
+                                ? (*controller_prefill_ms * 0.7) +
+                                      (*recent_prefill_ms * 0.3)
+                                : recent_prefill_ms;
     ASSIGN_OR_RETURN(PrefillDecodeHandoff handoff,
                      prefill_bundle.session->ExportPrefillDecodeHandoff());
+    if (IsEventModeEnabled()) {
+      ASSIGN_OR_RETURN(const auto handoff_stats,
+                       CollectHandoffTransferStats(handoff));
+      EmitEventLine(
+          {{"type", "HANDOFF_EXPORT"},
+           {"request_index", i},
+           {"request_id", request.request_id},
+           {"kv_cache_buffer_count", handoff_stats.kv_cache_count},
+           {"kv_cache_total_bytes", handoff_stats.kv_cache_total_bytes},
+           {"processed_token_count", handoff_stats.processed_token_count},
+           {"processed_token_bytes", handoff_stats.processed_token_bytes}});
+    }
 
     if (pending_decode.has_value()) {
       const bool decode_ready =
@@ -798,6 +1178,7 @@ absl::Status MainHelper(int argc, char** argv) {
                        {"stall_reason", "decode_worker_busy_after_prefill"}});
       }
       RETURN_IF_ERROR(FinalizeDecode(*pending_decode));
+      EmitDecodeDoneEvent(*pending_decode, requests);
       const OverlapAnalysis analysis = AnalyzeOverlapWindow(
           pending_decode->state->decode_window, prefill_windows[i]);
       if (IsEventModeEnabled()) {
@@ -816,38 +1197,44 @@ absl::Status MainHelper(int argc, char** argv) {
              {"no_overlap_reason",
               analysis.no_overlap_reason.value_or(std::string())}});
       }
+      recent_decode_ms = absl::ToDoubleMilliseconds(
+          pending_decode->state->decode_window.end_time -
+          pending_decode->state->decode_window.start_time);
+      controller_decode_ms = controller_decode_ms.has_value()
+                                 ? (*controller_decode_ms * 0.7) +
+                                       (*recent_decode_ms * 0.3)
+                                 : recent_decode_ms;
       final_texts[pending_decode->state->request_index] =
           pending_decode->state->text.value_or("");
       pending_decode.reset();
     }
 
     if (IsEventModeEnabled()) {
+      const absl::Time decode_start_time = absl::Now();
       EmitEventLine({{"type", "DECODE_START"},
                      {"request_index", i},
                      {"request_id", request.request_id},
-                     {"backend", "cpu"}});
+                     {"backend", "cpu"},
+                     {"timestamp_unix_nanos",
+                      absl::ToUnixNanos(decode_start_time)}});
     }
-    pending_decode = StartDecode(*decode_bundle.session, handoff,
-                                 *decode_bundle.tokenizer, constraint_regex, i);
+    pending_decode = StartDecode(*decode_bundle.session, handoff, request,
+                                 prefill_windows[i], *decode_bundle.tokenizer,
+                                 constraint_regex);
   }
 
   if (!pending_decode.has_value()) {
     return absl::InternalError("No decode request was launched.");
   }
   RETURN_IF_ERROR(FinalizeDecode(*pending_decode));
-  if (IsEventModeEnabled()) {
-    EmitEventLine(
-        {{"type", "DECODE_DONE"},
-         {"request_index", pending_decode->state->request_index},
-         {"request_id",
-          requests[pending_decode->state->request_index].request_id},
-         {"duration_ms",
-          absl::ToDoubleMilliseconds(
-              pending_decode->state->decode_window.end_time -
-              pending_decode->state->decode_window.start_time)},
-         {"timestamp_unix_nanos",
-          absl::ToUnixNanos(pending_decode->state->decode_window.end_time)}});
-  }
+  EmitDecodeDoneEvent(*pending_decode, requests);
+  recent_decode_ms = absl::ToDoubleMilliseconds(
+      pending_decode->state->decode_window.end_time -
+      pending_decode->state->decode_window.start_time);
+  controller_decode_ms = controller_decode_ms.has_value()
+                             ? (*controller_decode_ms * 0.7) +
+                                   (*recent_decode_ms * 0.3)
+                             : recent_decode_ms;
   final_texts[pending_decode->state->request_index] =
       pending_decode->state->text.value_or("");
 
@@ -863,6 +1250,10 @@ absl::Status MainHelper(int argc, char** argv) {
     }
   }
   if (IsEventModeEnabled()) {
+    ASSIGN_OR_RETURN(const ProcessCpuSnapshot process_end_snapshot,
+                     ReadProcessCpuSnapshot());
+    EmitEventLine(
+        BuildProcessCpuSummaryEvent(process_start_snapshot, process_end_snapshot));
     EmitEventLine({{"type", "DONE"}});
   }
   return absl::OkStatus();

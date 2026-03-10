@@ -106,6 +106,15 @@ absl::StatusOr<TensorBuffer> CloneTensorBufferToHost(
   return host_buffer;
 }
 
+absl::Status ZeroTensorBuffer(TensorBuffer& buffer) {
+  LITERT_ASSIGN_OR_RETURN(auto packed_size, buffer.PackedSize());
+  LITERT_ASSIGN_OR_RETURN(
+      auto lock_and_addr,
+      TensorBufferScopedLock::Create(buffer, TensorBuffer::LockMode::kWrite));
+  std::memset(lock_and_addr.second, 0, packed_size);
+  return absl::OkStatus();
+}
+
 absl::StatusOr<absl::flat_hash_map<std::string, KvCacheQuantizationParams>>
 ExtractPrefillHandoffQuantizationParams(const ::litert::Model& model,
                                         absl::string_view signature_key) {
@@ -1155,8 +1164,18 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::WarmupInference(
   RET_CHECK(cache_update_result) << "Warmup KV cache update (decode) failed."
                                  << cache_update_result.Error().Message();
 
-  // Clear the KV cache buffers after warmup.
+  // Clear every full KV-cache view after warmup so the first real request does
+  // not inherit warmup residue through any shared cache-update buffers.
   RETURN_IF_ERROR(ClearKVCache(llm_inference_context.prefill_input_buffers));
+  RETURN_IF_ERROR(ClearKVCache(llm_inference_context.decode_input_buffers));
+  RETURN_IF_ERROR(
+      ClearKVCache(cache_update_inference_context.prefill_input_buffers));
+  RETURN_IF_ERROR(
+      ClearKVCache(cache_update_inference_context.prefill_output_buffers));
+  RETURN_IF_ERROR(
+      ClearKVCache(cache_update_inference_context.decode_input_buffers));
+  RETURN_IF_ERROR(
+      ClearKVCache(cache_update_inference_context.decode_output_buffers));
   return absl::OkStatus();
 }
 
@@ -1375,6 +1394,14 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::PrefillInternal(
     memset(prefill_input_ptr, 0, prefill_input_size);
     memset(prefill_input_pos_ptr, 0, prefill_input_pos_size);
     memset(prefill_timestep_ptr, 0, prefill_timestep_size);
+    RETURN_IF_ERROR(ZeroTensorBuffer(
+        llm_inference_context_
+            .prefill_input_buffers[LlmSignatures::kInputEmbeddings]));
+    if (llm_inference_context_.prefill_input_buffers.contains(
+            kPerLayerEmbedderTensor)) {
+      RETURN_IF_ERROR(ZeroTensorBuffer(
+          llm_inference_context_.prefill_input_buffers[kPerLayerEmbedderTensor]));
+    }
 
     if (processed_tokens_.TokenCount() != current_step_) {
       RETURN_IF_ERROR(processed_tokens_.RollBackToStep(current_step_));
@@ -1769,8 +1796,19 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::Reset() {
   RETURN_IF_ERROR(processed_tokens_.RollBackToStep(0));
   sampled_ids_.clear();
   latency_stats_ = {};
+  current_prefill_cached_text_embeddings_ = nullptr;
+  current_prefill_cached_text_token_offset_ = 0;
 
   RETURN_IF_ERROR(ClearKVCache(llm_inference_context_.prefill_input_buffers));
+  RETURN_IF_ERROR(ClearKVCache(llm_inference_context_.decode_input_buffers));
+  RETURN_IF_ERROR(
+      ClearKVCache(cache_update_inference_context_.prefill_input_buffers));
+  RETURN_IF_ERROR(
+      ClearKVCache(cache_update_inference_context_.prefill_output_buffers));
+  RETURN_IF_ERROR(
+      ClearKVCache(cache_update_inference_context_.decode_input_buffers));
+  RETURN_IF_ERROR(
+      ClearKVCache(cache_update_inference_context_.decode_output_buffers));
   return absl::OkStatus();
 }
 

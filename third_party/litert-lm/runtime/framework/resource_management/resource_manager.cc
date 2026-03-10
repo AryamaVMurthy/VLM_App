@@ -245,6 +245,13 @@ class LockedLlmExecutor : public LlmExecutor {
           auto new_vision_embeddings,
           inputs.GetVisionEmbeddingsPtr().value()->Duplicate());
       new_vision_data->SetEmbeddings(std::move(new_vision_embeddings));
+      if (inputs.GetVisionDataPtr()
+              .value()
+              ->GetSelectedTokenIndices()
+              .has_value()) {
+        new_vision_data->SetSelectedTokenIndices(
+            *inputs.GetVisionDataPtr().value()->GetSelectedTokenIndices());
+      }
       if (inputs.GetVisionDataPtr().value()->GetPerLayerEmbeddingsPtr().ok()) {
         LITERT_ASSIGN_OR_RETURN(auto new_per_layer_embeddings,
                                 inputs.GetVisionDataPtr()

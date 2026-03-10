@@ -58,7 +58,9 @@ MATCHER_P(StatusIs, code, "") {
 
 MATCHER_P2(StatusIs, code, msg, "") {
   const auto& status = GetStatus(arg);
-  return status.code() == code && status.message() == msg;
+  return status.code() == code &&
+         ::testing::ExplainMatchResult(msg, std::string(status.message()),
+                                       result_listener);
 }
 
 MATCHER_P(IsOkAndHolds, value, "") {

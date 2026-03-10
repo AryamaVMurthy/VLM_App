@@ -682,6 +682,23 @@ absl::Status LlmLiteRtCompiledModelExecutorBase::RollBackProcessedTokens() {
   return absl::OkStatus();
 }
 
+absl::Status LlmLiteRtCompiledModelExecutorBase::ResetDecodePipelineState() {
+  if (sampler_ != nullptr && sampler_->HandlesInput()) {
+    RETURN_IF_ERROR(SetSamplerInputHandling(/*reset=*/true));
+  }
+  sampler_.reset();
+  sampler_handles_input_ = false;
+  decode_prev_input_pos_ = TensorBuffer();
+  decode_prev_mask_ = TensorBuffer();
+  current_prefill_cached_text_embeddings_ = nullptr;
+  current_prefill_cached_text_token_offset_ = 0;
+  input_kv_cache_buffers_ = &kv_cache_buffers_1_;
+  output_kv_cache_buffers_ =
+      kv_cache_buffers_2_.empty() ? &kv_cache_buffers_1_ : &kv_cache_buffers_2_;
+  force_prepare_needed_ = false;
+  return absl::OkStatus();
+}
+
 absl::Status LlmLiteRtCompiledModelExecutorBase::PrepareFirstPrefillAfterDecode(
     int token_index_to_reduce) {
   if (!llm_context_->runtime_state().ran_decode && !force_prepare_needed_) {
@@ -1484,7 +1501,11 @@ absl::Status LlmLiteRtCompiledModelExecutorBase::SetCurrentStep(int new_step) {
 }
 
 absl::Status LlmLiteRtCompiledModelExecutorBase::Reset() {
+  RETURN_IF_ERROR(ResetDecodePipelineState());
   llm_context_->runtime_state().current_step = 0;
+  llm_context_->runtime_state().ran_decode = false;
+  RETURN_IF_ERROR(llm_context_->processed_context().processed_tokens()
+                      .RollBackToStep(/*new_step=*/0));
   return absl::OkStatus();
 }
 
@@ -1536,6 +1557,8 @@ absl::Status LlmLiteRtCompiledModelExecutorBase::ImportPrefillDecodeHandoff(
       << "CPU/GPU executor does not expose importable KV cache buffers.";
   RET_CHECK_EQ(handoff.kv_cache_buffers.size(), kv_cache_buffers_1_.size())
       << "Prefill/decode handoff KV cache set does not match executor.";
+
+  RETURN_IF_ERROR(ResetDecodePipelineState());
 
   for (auto& [cache_name, cache_buffer] : kv_cache_buffers_1_) {
     auto handoff_it = handoff.kv_cache_buffers.find(std::string(cache_name));

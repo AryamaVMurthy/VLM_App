@@ -16,6 +16,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>  // NOLINT: Required for path manipulation.
 #include <memory>
 #include <optional>
@@ -62,6 +63,29 @@ namespace litert::lm {
 namespace {
 
 using ::testing::status::StatusIs;
+
+class ScopedEnvVar {
+ public:
+  ScopedEnvVar(const char* name, const char* value) : name_(name) {
+    const char* previous = std::getenv(name_);
+    if (previous != nullptr) {
+      previous_value_ = std::string(previous);
+    }
+    EXPECT_EQ(setenv(name_, value, /*overwrite=*/1), 0);
+  }
+
+  ~ScopedEnvVar() {
+    if (previous_value_.has_value()) {
+      EXPECT_EQ(setenv(name_, previous_value_->c_str(), /*overwrite=*/1), 0);
+    } else {
+      EXPECT_EQ(unsetenv(name_), 0);
+    }
+  }
+
+ private:
+  const char* name_;
+  std::optional<std::string> previous_value_;
+};
 
 constexpr absl::string_view kTestdataDir =
     "litert_lm/runtime/components/testdata/";
@@ -1353,6 +1377,243 @@ TEST_F(SessionBasicTest,
               testing::HasSubstr(
                   "prompt_conditioned_v1 requires the real FastVLM text "
                   "embedder"));
+}
+
+TEST_F(SessionBasicTest,
+       ProcessAndCombineContentsPromptConditionedV2RequiresPromptEmbedder) {
+  SessionConfig session_config = SessionConfig::CreateDefault();
+  session_config.SetStartTokenId(2);
+  session_config.SetSamplerBackend(Backend::CPU);
+  session_config.SetVisionModalityEnabled(true);
+  session_config.SetMaxVisualTokens(2);
+  session_config.SetVisualTokenPruningStrategy("prompt_conditioned_v2");
+  session_config.GetMutableLlmModelType().mutable_gemma3n();
+
+  ASSERT_OK_AND_ASSIGN(auto executor,
+                       CreateFakeLlmExecutor(/*prefill_tokens=*/{{2, -1, -1}},
+                                             /*decode_tokens=*/{{1}}));
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto vision_embeddings,
+      CopyToTensorBuffer<float>({1.0f, 0.0f, 0.0f, 1.0f}, {1, 1, 2, 2}));
+  auto vision_executor = std::make_unique<FakeVisionExecutor>(
+      ExecutorVisionData(std::move(vision_embeddings), std::nullopt));
+
+  ASSERT_OK_AND_ASSIGN(
+      auto session,
+      SessionBasic::Create(executor.get(), tokenizer_.get(),
+                           /*vision_executor=*/vision_executor.get(),
+                           /*audio_executor=*/nullptr, session_config,
+                           std::nullopt, worker_thread_pool_.get()));
+
+  LITERT_ASSERT_OK_AND_ASSIGN(auto image_tensor,
+                              CopyToTensorBuffer<float>(
+                                  {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                   0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
+                                  {1, 2, 2, 3}));
+  LITERT_ASSERT_OK_AND_ASSIGN(auto token_ids_buffer,
+                              tokenizer_->TokenIdsToTensorBuffer({1}));
+  std::vector<InputData> preprocessed_contents;
+  preprocessed_contents.emplace_back(InputText(std::move(token_ids_buffer)));
+  preprocessed_contents.emplace_back(InputImage(std::move(image_tensor)));
+
+  auto process_status = session->ProcessAndCombineContents(preprocessed_contents);
+  ASSERT_FALSE(process_status.ok());
+  EXPECT_EQ(process_status.status().code(),
+            absl::StatusCode::kFailedPrecondition);
+  EXPECT_THAT(std::string(process_status.status().message()),
+              testing::HasSubstr(
+                  "prompt_conditioned_v2 requires the real FastVLM text "
+                  "embedder"));
+}
+
+TEST_F(SessionBasicTest, MutableVisualTokenSettingsUpdateSessionConfig) {
+  SessionConfig session_config = SessionConfig::CreateDefault();
+  session_config.SetStartTokenId(2);
+  session_config.SetSamplerBackend(Backend::CPU);
+
+  ASSERT_OK_AND_ASSIGN(auto executor,
+                       CreateFakeLlmExecutor(/*prefill_tokens=*/{{2, -1, -1}},
+                                             /*decode_tokens=*/{{1}}));
+  ASSERT_OK_AND_ASSIGN(
+      auto session,
+      SessionBasic::Create(executor.get(), tokenizer_.get(),
+                           /*vision_executor=*/nullptr,
+                           /*audio_executor=*/nullptr, session_config,
+                           std::nullopt, worker_thread_pool_.get()));
+
+  session->SetMaxVisualTokens(64);
+  session->SetVisualTokenPruningStrategy("prompt_conditioned_v2");
+
+  EXPECT_EQ(session->GetSessionConfig().GetMaxVisualTokens(), 64);
+  EXPECT_EQ(session->GetSessionConfig().GetVisualTokenPruningStrategy(),
+            "prompt_conditioned_v2");
+}
+
+TEST_F(SessionBasicTest,
+       ProcessAndCombineContentsRejectsInvalidPromptAttentionTopKOverride) {
+  ScopedEnvVar scoped_env_var("LITERT_LM_PRUNING_PROMPT_ATTENTION_TOP_K",
+                              "not_an_int");
+  SessionConfig session_config = SessionConfig::CreateDefault();
+  session_config.SetStartTokenId(2);
+  session_config.SetSamplerBackend(Backend::CPU);
+  session_config.SetVisionModalityEnabled(true);
+  session_config.SetMaxVisualTokens(2);
+  session_config.SetVisualTokenPruningStrategy("prompt_conditioned_v2");
+  session_config.GetMutableLlmModelType().mutable_gemma3n();
+
+  ASSERT_OK_AND_ASSIGN(auto executor,
+                       CreateFakeLlmExecutor(/*prefill_tokens=*/{{2, -1, -1}},
+                                             /*decode_tokens=*/{{1}}));
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto vision_embeddings,
+      CopyToTensorBuffer<float>({1.0f, 0.0f, 0.0f, 1.0f}, {1, 1, 2, 2}));
+  auto vision_executor = std::make_unique<FakeVisionExecutor>(
+      ExecutorVisionData(std::move(vision_embeddings), std::nullopt));
+
+  ASSERT_OK_AND_ASSIGN(
+      auto session,
+      SessionBasic::Create(executor.get(), tokenizer_.get(),
+                           /*vision_executor=*/vision_executor.get(),
+                           /*audio_executor=*/nullptr, session_config,
+                           std::nullopt, worker_thread_pool_.get()));
+
+  LITERT_ASSERT_OK_AND_ASSIGN(auto image_tensor,
+                              CopyToTensorBuffer<float>(
+                                  {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                   0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
+                                  {1, 2, 2, 3}));
+  LITERT_ASSERT_OK_AND_ASSIGN(auto token_ids_buffer,
+                              tokenizer_->TokenIdsToTensorBuffer({1}));
+  std::vector<InputData> preprocessed_contents;
+  preprocessed_contents.emplace_back(InputText(std::move(token_ids_buffer)));
+  preprocessed_contents.emplace_back(InputImage(std::move(image_tensor)));
+
+  auto process_status = session->ProcessAndCombineContents(preprocessed_contents);
+  ASSERT_FALSE(process_status.ok());
+  EXPECT_EQ(process_status.status().code(),
+            absl::StatusCode::kInvalidArgument);
+  EXPECT_THAT(std::string(process_status.status().message()),
+              testing::HasSubstr(
+                  "Invalid int value for "
+                  "LITERT_LM_PRUNING_PROMPT_ATTENTION_TOP_K"));
+}
+
+TEST_F(SessionBasicTest,
+       ProcessAndCombineContentsRejectsInvalidFusedProjectionPrunePackOverride) {
+  ScopedEnvVar scoped_env_var("LITERT_LM_PRUNING_FUSE_PROJECTION_PRUNE_PACK",
+                              "maybe");
+  SessionConfig session_config = SessionConfig::CreateDefault();
+  session_config.SetStartTokenId(2);
+  session_config.SetSamplerBackend(Backend::CPU);
+  session_config.SetVisionModalityEnabled(true);
+  session_config.SetMaxVisualTokens(2);
+  session_config.SetVisualTokenPruningStrategy("prompt_conditioned_v2");
+  session_config.GetMutableLlmModelType().mutable_gemma3n();
+
+  ASSERT_OK_AND_ASSIGN(auto executor,
+                       CreateFakeLlmExecutor(/*prefill_tokens=*/{{2, -1, -1}},
+                                             /*decode_tokens=*/{{1}}));
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto vision_embeddings,
+      CopyToTensorBuffer<float>({1.0f, 0.0f, 0.0f, 1.0f}, {1, 1, 2, 2}));
+  auto vision_executor = std::make_unique<FakeVisionExecutor>(
+      ExecutorVisionData(std::move(vision_embeddings), std::nullopt));
+
+  ASSERT_OK_AND_ASSIGN(
+      auto session,
+      SessionBasic::Create(executor.get(), tokenizer_.get(),
+                           /*vision_executor=*/vision_executor.get(),
+                           /*audio_executor=*/nullptr, session_config,
+                           std::nullopt, worker_thread_pool_.get()));
+
+  LITERT_ASSERT_OK_AND_ASSIGN(auto image_tensor,
+                              CopyToTensorBuffer<float>(
+                                  {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                   0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
+                                  {1, 2, 2, 3}));
+  LITERT_ASSERT_OK_AND_ASSIGN(auto token_ids_buffer,
+                              tokenizer_->TokenIdsToTensorBuffer({1}));
+  std::vector<InputData> preprocessed_contents;
+  preprocessed_contents.emplace_back(InputText(std::move(token_ids_buffer)));
+  preprocessed_contents.emplace_back(InputImage(std::move(image_tensor)));
+
+  auto process_status = session->ProcessAndCombineContents(preprocessed_contents);
+  ASSERT_FALSE(process_status.ok());
+  EXPECT_EQ(process_status.status().code(),
+            absl::StatusCode::kInvalidArgument);
+  EXPECT_THAT(std::string(process_status.status().message()),
+              testing::HasSubstr(
+                  "Invalid bool value for "
+                  "LITERT_LM_PRUNING_FUSE_PROJECTION_PRUNE_PACK"));
+}
+
+TEST_F(
+    SessionBasicTest,
+    ProcessAndCombineContentsPromptConditioningCacheDoesNotPopulatePrefillCache) {
+  SessionConfig session_config = SessionConfig::CreateDefault();
+  session_config.SetStartTokenId(-1);
+  session_config.SetSamplerBackend(Backend::CPU);
+  session_config.SetVisionModalityEnabled(true);
+  session_config.SetMaxVisualTokens(2);
+  session_config.SetVisualTokenPruningStrategy("prompt_conditioned_v2");
+  session_config.GetMutableLlmModelType().mutable_gemma3n();
+
+  auto prompt_embedder_model_path =
+      std::filesystem::path(::testing::SrcDir()) / kTestdataDir /
+      "dummy_embedding_cpu_model.tflite";
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto prompt_embedder_model,
+      litert::Model::CreateFromFile(prompt_embedder_model_path.string()));
+  ASSERT_OK_AND_ASSIGN(
+      auto prompt_embedding_lookup_manager,
+      EmbeddingLookupManager::Create(&prompt_embedder_model,
+                                     /*fully_supports_multi_modal=*/false));
+
+  std::vector<float> token_one_embedding;
+  ASSERT_OK(
+      prompt_embedding_lookup_manager->LookupPrefill(1, token_one_embedding));
+
+  ASSERT_OK_AND_ASSIGN(auto executor,
+                       CreateFakeLlmExecutor(/*prefill_tokens=*/{{2, -1, -1}},
+                                             /*decode_tokens=*/{{1}}));
+  LITERT_ASSERT_OK_AND_ASSIGN(
+      auto vision_embeddings,
+      CopyToTensorBuffer<float>({1.0f, 0.0f, 0.0f, 1.0f}, {1, 1, 2, 2}));
+  auto vision_executor = std::make_unique<FakeVisionExecutor>(
+      ExecutorVisionData(std::move(vision_embeddings), std::nullopt));
+
+  ASSERT_OK_AND_ASSIGN(
+      auto session,
+      SessionBasic::Create(executor.get(), tokenizer_.get(),
+                           /*vision_executor=*/vision_executor.get(),
+                           /*audio_executor=*/nullptr,
+                           std::move(prompt_embedding_lookup_manager),
+                           session_config,
+                           std::nullopt, worker_thread_pool_.get()));
+
+  LITERT_ASSERT_OK_AND_ASSIGN(auto image_tensor,
+                              CopyToTensorBuffer<float>(
+                                  {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                   0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
+                                  {1, 2, 2, 3}));
+  LITERT_ASSERT_OK_AND_ASSIGN(auto token_ids_buffer,
+                              tokenizer_->TokenIdsToTensorBuffer({1, 2, 3}));
+  std::vector<InputData> preprocessed_contents;
+  preprocessed_contents.emplace_back(InputText(std::move(token_ids_buffer)));
+  preprocessed_contents.emplace_back(InputImage(std::move(image_tensor)));
+
+  ExecutorTextData::CachedTextEmbeddings prompt_conditioning_cache{
+      .token_count = 1,
+      .floats_per_token = static_cast<int>(token_one_embedding.size()),
+      .values = token_one_embedding,
+  };
+  ASSERT_OK_AND_ASSIGN(
+      auto result,
+      session->ProcessAndCombineContents(preprocessed_contents,
+                                         &prompt_conditioning_cache));
+
+  EXPECT_THAT(result.GetCachedTextEmbeddingsPtr(),
+              testing::status::StatusIs(absl::StatusCode::kNotFound));
 }
 
 TEST_F(SessionBasicTest, RunIncrementalPrefillWithDecode) {
