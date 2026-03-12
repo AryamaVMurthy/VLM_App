@@ -152,8 +152,8 @@ class DiscreteEventSimulationTest(unittest.TestCase):
             ),
         )
         requests = (
-            RequestSpec(request_id="req0", arrival_ms=0, workflow=self.workflow, plan=copy_plan),
-            RequestSpec(request_id="req1", arrival_ms=0, workflow=self.workflow, plan=copy_plan),
+            RequestSpec(request_id="req0", arrival_ms=0, workflow=self.workflow, plan=copy_plan, deadline_ms=10),
+            RequestSpec(request_id="req1", arrival_ms=0, workflow=self.workflow, plan=copy_plan, deadline_ms=5),
         )
 
         result = simulate_request_stream(
@@ -162,7 +162,7 @@ class DiscreteEventSimulationTest(unittest.TestCase):
             bandwidth_bytes_per_ms=1024.0,
             transfer_fixed_overhead_ms=1.0,
             transfer_layout_ms=1.0,
-            objective_weights=ObjectiveWeights(alpha=1.0, beta=0.25, gamma=1.0, delta=1e-6, eta=1e-6, zeta=0.0),
+            objective_weights=ObjectiveWeights(alpha=1.0, beta=0.25, gamma=1.0, delta=1e-6, eta=1e-6, zeta=0.0, xi=2.0, psi=50.0),
         )
 
         self.assertGreater(result.copy_bytes, 0)
@@ -170,6 +170,41 @@ class DiscreteEventSimulationTest(unittest.TestCase):
         self.assertGreater(result.peak_memory_bytes, 0)
         self.assertGreater(result.energy_mj, 0.0)
         self.assertIsNotNone(result.objective_score)
+        self.assertGreater(result.p95_queue_delay_ms, 0.0)
+        self.assertGreater(result.deadline_miss_rate, 0.0)
+
+    def test_stream_simulation_objective_includes_queue_delay_and_deadline_miss(self):
+        requests = (
+            RequestSpec(
+                request_id="req0",
+                arrival_ms=0,
+                workflow=self.workflow,
+                plan=self.plan,
+                deadline_ms=10,
+            ),
+            RequestSpec(
+                request_id="req1",
+                arrival_ms=0,
+                workflow=self.workflow,
+                plan=self.plan,
+                deadline_ms=5,
+            ),
+        )
+
+        baseline = simulate_request_stream(
+            requests,
+            resource_capacities={"cpu": 1, "npu": 1},
+            objective_weights=ObjectiveWeights(alpha=1.0, beta=0.0, gamma=0.0, delta=0.0, eta=0.0, zeta=0.0, xi=0.0, psi=0.0),
+        )
+        penalized = simulate_request_stream(
+            requests,
+            resource_capacities={"cpu": 1, "npu": 1},
+            objective_weights=ObjectiveWeights(alpha=1.0, beta=0.0, gamma=0.0, delta=0.0, eta=0.0, zeta=0.0, xi=10.0, psi=500.0),
+        )
+
+        self.assertIsNotNone(baseline.objective_score)
+        self.assertIsNotNone(penalized.objective_score)
+        self.assertGreater(penalized.objective_score, baseline.objective_score)
 
 
 if __name__ == "__main__":

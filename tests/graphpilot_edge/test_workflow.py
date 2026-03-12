@@ -22,6 +22,7 @@ class WorkflowDagTest(unittest.TestCase):
                 WorkflowEdge("vlm.fastvlm.primary", "responder.primary", "full"),
                 WorkflowEdge("retrieval.embedder.primary", "responder.primary", "full"),
             ),
+            chunk_sizes=(("asr.primary", 800),),
         )
 
         self.assertEqual(
@@ -39,6 +40,8 @@ class WorkflowDagTest(unittest.TestCase):
             workflow.predecessors("responder.primary"),
             ("retrieval.embedder.primary", "vlm.fastvlm.primary"),
         )
+        self.assertEqual(workflow.chunk_size("asr.primary"), 800)
+        self.assertIsNone(workflow.chunk_size("planner.primary"))
 
     def test_cycle_detection_fails_fast(self):
         with self.assertRaisesRegex(ValidationError, "cycle"):
@@ -50,6 +53,23 @@ class WorkflowDagTest(unittest.TestCase):
                     WorkflowEdge("b", "c", "full"),
                     WorkflowEdge("c", "a", "full"),
                 ),
+            )
+
+    def test_chunk_sizes_validate_stage_membership_and_positive_values(self):
+        with self.assertRaisesRegex(ValidationError, "unknown stage"):
+            WorkflowDag(
+                workflow_id="invalid_chunks",
+                stage_ids=("asr.primary", "planner.primary"),
+                edges=(WorkflowEdge("asr.primary", "planner.primary", "chunk"),),
+                chunk_sizes=(("missing.primary", 800),),
+            )
+
+        with self.assertRaisesRegex(ValidationError, "must be > 0"):
+            WorkflowDag(
+                workflow_id="invalid_chunk_value",
+                stage_ids=("asr.primary", "planner.primary"),
+                edges=(WorkflowEdge("asr.primary", "planner.primary", "chunk"),),
+                chunk_sizes=(("asr.primary", 0),),
             )
 
 

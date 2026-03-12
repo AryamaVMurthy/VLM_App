@@ -26,6 +26,8 @@ data class GraphPilotQueueObservation(
   val deadlineMs: Long?,
   val admittedAtMs: Long,
   val admissionDecision: GraphPilotAdmissionDecision,
+  val requiredBackends: Set<String> = emptySet(),
+  val priorityScore: Double = 0.0,
   val queueWaitMs: Long = 0L,
 )
 
@@ -33,6 +35,7 @@ private data class GraphPilotActiveRequest(
   val requestId: Long,
   val predictedServiceMs: Double,
   val startedAtMs: Long,
+  val requiredBackends: Set<String>,
 ) {
   fun remainingMs(nowMs: Long): Double = (predictedServiceMs - (nowMs - startedAtMs)).coerceAtLeast(0.0)
 }
@@ -40,20 +43,31 @@ private data class GraphPilotActiveRequest(
 private data class GraphPilotPendingRequest(
   val requestId: Long,
   val predictedServiceMs: Double,
+  val requiredBackends: Set<String>,
+  val priorityScore: Double,
   val startSignal: CompletableDeferred<Unit>,
+)
+
+data class GraphPilotSchedulerWeights(
+  val latencyWeight: Double = 1.0,
+  val firstOutputWeight: Double = 3.0,
+  val slackWeight: Double = 2.0,
+  val deadlineUrgencyWeight: Double = 500.0,
+  val queuePenaltyWeight: Double = 0.01,
 )
 
 class GraphPilotRuntimeScheduler(
   private val maxQueuedRequests: Int = 2,
   private val clockMs: () -> Long = { System.currentTimeMillis() },
+  private val weights: GraphPilotSchedulerWeights = GraphPilotSchedulerWeights(),
 ) {
   init {
     require(maxQueuedRequests >= 0) { "maxQueuedRequests must be >= 0" }
   }
 
   private val lock = Mutex()
-  private val pending = ArrayDeque<GraphPilotPendingRequest>()
-  private var active: GraphPilotActiveRequest? = null
+  private val pending = mutableListOf<GraphPilotPendingRequest>()
+  private val active = linkedMapOf<Long, GraphPilotActiveRequest>()
   private var nextRequestId = 1L
 
   suspend fun <T> runWithAdmission(
@@ -83,10 +97,10 @@ class GraphPilotRuntimeScheduler(
     val nowMs = clockMs()
     val requestId = nextRequestId++
     val predictedServiceMs = predictedCost.streamMakespanMs!!
-    val activeRemainingMs = active?.remainingMs(nowMs) ?: 0.0
-    val queuedAheadMs = pending.sumOf { it.predictedServiceMs }
-    val queueDepthAtAdmission = pending.size + if (active != null) 1 else 0
-    val predictedQueueDelayMs = activeRemainingMs + queuedAheadMs
+    val requiredBackends = requiredBackendSet(plan)
+    val priorityScore = computePriorityScore(plan, deadlineMs)
+    val queueDepthAtAdmission = overlappingRequestCount(requiredBackends)
+    val predictedQueueDelayMs = predictQueueDelayMs(requiredBackends, nowMs)
     val predictedCompletionMs = predictedQueueDelayMs + predictedServiceMs
     val predictedDeadlineMiss =
       deadlineMs?.let { predictedCompletionMs > it } ?: (predictedCost.deadlineMissRate!! > 0.0)
@@ -118,9 +132,17 @@ class GraphPilotRuntimeScheduler(
         deadlineMs = deadlineMs,
         admittedAtMs = nowMs,
         admissionDecision = GraphPilotAdmissionDecision.ADMIT,
+        requiredBackends = requiredBackends,
+        priorityScore = priorityScore,
       )
-    if (active == null && pending.isEmpty()) {
-      active = GraphPilotActiveRequest(requestId = requestId, predictedServiceMs = predictedServiceMs, startedAtMs = nowMs)
+    if (canStartImmediately(requiredBackends)) {
+      active[requestId] =
+        GraphPilotActiveRequest(
+          requestId = requestId,
+          predictedServiceMs = predictedServiceMs,
+          startedAtMs = nowMs,
+          requiredBackends = requiredBackends,
+        )
       return@withLock GraphPilotAdmissionHandle(
         requestId = requestId,
         observation = observation,
@@ -133,8 +155,15 @@ class GraphPilotRuntimeScheduler(
       GraphPilotPendingRequest(
         requestId = requestId,
         predictedServiceMs = predictedServiceMs,
+        requiredBackends = requiredBackends,
+        priorityScore = priorityScore,
         startSignal = startSignal,
       )
+    )
+    pending.sortWith(
+      compareByDescending<GraphPilotPendingRequest> { it.priorityScore }
+        .thenBy { it.predictedServiceMs }
+        .thenBy { it.requestId }
     )
     GraphPilotAdmissionHandle(
       requestId = requestId,
@@ -144,22 +173,92 @@ class GraphPilotRuntimeScheduler(
   }
 
   private suspend fun complete(requestId: Long) = lock.withLock {
-    val activeRequest = active
-    check(activeRequest?.requestId == requestId) {
+    val removed = active.remove(requestId)
+    check(removed != null) {
       "GraphPilot runtime scheduler lost queue ownership for request_id=${requestId}. " +
         "Remediation: investigate concurrent coordinator execution and scheduler lifecycle."
     }
-    active = null
-    if (pending.isNotEmpty()) {
-      val next = pending.removeFirst()
-      active =
-        GraphPilotActiveRequest(
-          requestId = next.requestId,
-          predictedServiceMs = next.predictedServiceMs,
-          startedAtMs = clockMs(),
-        )
-      next.startSignal.complete(Unit)
+    var startedRequest = true
+    while (startedRequest) {
+      startedRequest = false
+      val reservedBackends = active.values.flatMapTo(linkedSetOf()) { it.requiredBackends }
+      val nextIndex =
+        pending.indexOfFirst { request ->
+          request.requiredBackends.none { it in reservedBackends }
+        }
+      if (nextIndex >= 0) {
+        val next = pending.removeAt(nextIndex)
+        active[next.requestId] =
+          GraphPilotActiveRequest(
+            requestId = next.requestId,
+            predictedServiceMs = next.predictedServiceMs,
+            startedAtMs = clockMs(),
+            requiredBackends = next.requiredBackends,
+          )
+        next.startSignal.complete(Unit)
+        startedRequest = true
+      }
     }
+  }
+
+  private fun overlappingRequestCount(requiredBackends: Set<String>): Int {
+    val activeConflicts = active.values.count { overlaps(it.requiredBackends, requiredBackends) }
+    val pendingConflicts = pending.count { overlaps(it.requiredBackends, requiredBackends) }
+    return activeConflicts + pendingConflicts
+  }
+
+  private fun predictQueueDelayMs(requiredBackends: Set<String>, nowMs: Long): Double {
+    val activeDelay =
+      active.values
+        .filter { overlaps(it.requiredBackends, requiredBackends) }
+        .maxOfOrNull { it.remainingMs(nowMs) }
+        ?: 0.0
+    val pendingDelay =
+      pending
+        .filter { overlaps(it.requiredBackends, requiredBackends) }
+        .sumOf { it.predictedServiceMs }
+    return activeDelay + pendingDelay
+  }
+
+  private fun canStartImmediately(requiredBackends: Set<String>): Boolean {
+    return active.values.none { overlaps(it.requiredBackends, requiredBackends) }
+  }
+
+  private fun computePriorityScore(
+    plan: GraphPilotExecutionPlan,
+    deadlineMs: Long?,
+  ): Double {
+    val cost = plan.requirePredictedStreamCost()
+    val streamMs = cost.streamMakespanMs ?: 1.0
+    val firstOutputMs =
+      listOfNotNull(cost.ttftMs, cost.p95TtfsMs, cost.ttfsMs, cost.streamMakespanMs)
+        .filter { it > 0.0 }
+        .minOrNull()
+        ?: streamMs
+    val slackScore =
+      if (deadlineMs == null) {
+        0.0
+      } else {
+        val slackMs = (deadlineMs - streamMs).coerceAtLeast(0.0)
+        1000.0 / (1.0 + slackMs)
+      }
+    val deadlineUrgency = (cost.deadlineMissRate ?: 0.0) * weights.deadlineUrgencyWeight
+    val queuePenalty = (cost.p95QueueDelayMs ?: 0.0) * weights.queuePenaltyWeight
+    return (
+      weights.latencyWeight * (1000.0 / streamMs.coerceAtLeast(1.0))
+        + weights.firstOutputWeight * (1000.0 / firstOutputMs.coerceAtLeast(1.0))
+        + weights.slackWeight * slackScore
+        + deadlineUrgency
+        - queuePenalty
+      )
+  }
+
+  private fun requiredBackendSet(plan: GraphPilotExecutionPlan): Set<String> {
+    return plan.backend_map.values.map { it.lowercase() }.toSet()
+  }
+
+  private fun overlaps(left: Set<String>, right: Set<String>): Boolean {
+    return left.any { it in right }
   }
 }
 

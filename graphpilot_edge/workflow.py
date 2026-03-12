@@ -26,6 +26,7 @@ class WorkflowDag:
     workflow_id: str
     stage_ids: tuple[str, ...]
     edges: tuple[WorkflowEdge, ...]
+    chunk_sizes: tuple[tuple[str, int], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.stage_ids:
@@ -38,6 +39,21 @@ class WorkflowDag:
                 raise ValidationError(
                     f"Workflow edge '{edge.source_stage_id}->{edge.target_stage_id}' references an unknown stage."
                 )
+        seen_chunk_stages: set[str] = set()
+        for stage_id, chunk_size in self.chunk_sizes:
+            if stage_id in seen_chunk_stages:
+                raise ValidationError(
+                    f"Workflow DAG '{self.workflow_id}' declares duplicate chunk size entries for stage '{stage_id}'."
+                )
+            if stage_id not in stage_set:
+                raise ValidationError(
+                    f"Workflow DAG '{self.workflow_id}' chunk_sizes references an unknown stage '{stage_id}'."
+                )
+            if chunk_size <= 0:
+                raise ValidationError(
+                    f"Workflow DAG '{self.workflow_id}' chunk size for stage '{stage_id}' must be > 0."
+                )
+            seen_chunk_stages.add(stage_id)
         self.topological_order()
 
     def predecessors(self, stage_id: str) -> tuple[str, ...]:
@@ -79,6 +95,13 @@ class WorkflowDag:
         if len(order) != len(self.stage_ids):
             raise ValidationError(f"Workflow DAG '{self.workflow_id}' contains a cycle.")
         return tuple(order)
+
+    def chunk_size(self, stage_id: str) -> int | None:
+        self._require_stage(stage_id)
+        for current_stage_id, chunk_size in self.chunk_sizes:
+            if current_stage_id == stage_id:
+                return chunk_size
+        return None
 
     def _require_stage(self, stage_id: str) -> None:
         if stage_id not in self.stage_ids:

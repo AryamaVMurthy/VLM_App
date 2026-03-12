@@ -21,6 +21,11 @@ class GraphPilotCoordinatorTest {
         predictedCost =
           GraphPilotPredictedCost(
             streamMakespanMs = 12345.0,
+            p95E2eMs = 12000.0,
+            p95TtfsMs = 7000.0,
+            avgEnergyMj = 88.0,
+            copyBytes = 4096L,
+            qualityLoss = 0.1,
             p95QueueDelayMs = 456.0,
             deadlineMissRate = 0.25,
           ),
@@ -47,6 +52,11 @@ class GraphPilotCoordinatorTest {
     assertThat(message).contains("queue_depth_at_admission=1")
     assertThat(message).contains("predicted_queue_delay_at_admission_ms=1000.0")
     assertThat(message).contains("predicted_stream_makespan_ms=12345.0")
+    assertThat(message).contains("predicted_p95_e2e_ms=12000.0")
+    assertThat(message).contains("predicted_p95_ttfs_ms=7000.0")
+    assertThat(message).contains("predicted_avg_energy_mj=88.0")
+    assertThat(message).contains("predicted_copy_bytes=4096")
+    assertThat(message).contains("predicted_quality_loss=0.1")
     assertThat(message).contains("predicted_p95_queue_ms=456.0")
     assertThat(message).contains("predicted_deadline_miss_rate=0.25")
   }
@@ -88,6 +98,8 @@ class GraphPilotCoordinatorTest {
               responderMaxTokens = 24,
             )
           ),
+        totalAddedLatencyMs = 0.0,
+        totalQualityLoss = 0.1,
         effectiveResponderMaxTokens = 24,
         reason = "Request exceeded usable memory budget and was degraded to fit.",
       )
@@ -108,8 +120,42 @@ class GraphPilotCoordinatorTest {
     assertThat(message).contains("memory_source=workflow_heuristic_v1")
     assertThat(message).contains("active_reserved_bytes=25165824")
     assertThat(message).contains("decision=DEGRADE")
+    assertThat(message).contains("total_added_latency_ms=0.0")
+    assertThat(message).contains("total_quality_loss=0.1")
     assertThat(message).contains("applied_actions=reduce_responder_max_tokens")
     assertThat(message).contains("effective_responder_max_tokens=24")
+  }
+
+  @Test
+  fun buildStreamFallbackLogMessageIncludesFallbackReason() {
+    val plan =
+      GraphPilotExecutionPlan(
+        plan_id = "cool:workflow_a:test",
+        workflow_template = "workflow_a_voice_only",
+        state_id = "cool",
+        backend_map =
+          mapOf(
+            "asr.primary" to "cpu",
+            "planner.primary" to "cpu",
+            "responder.primary" to "cpu",
+            "tts.primary" to "cpu",
+          ),
+      )
+
+    val message =
+      buildStreamFallbackLogMessage(
+        workflowId = "workflow_a_voice_only",
+        plan = plan,
+        fromStageId = "asr.primary",
+        toStageId = "planner.primary",
+        fallbackReason = "missing_chunk_size_for_chunk_stream_edge",
+      )
+
+    assertThat(message).contains("GRAPHPILOT_STREAM_FALLBACK")
+    assertThat(message).contains("workflow=workflow_a_voice_only")
+    assertThat(message).contains("from_stage=asr.primary")
+    assertThat(message).contains("to_stage=planner.primary")
+    assertThat(message).contains("fallback_reason=missing_chunk_size_for_chunk_stream_edge")
   }
 
   @Test(expected = IllegalStateException::class)

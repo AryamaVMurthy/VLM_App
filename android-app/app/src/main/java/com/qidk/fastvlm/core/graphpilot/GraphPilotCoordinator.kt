@@ -46,6 +46,11 @@ internal fun buildAdmissionLogMessage(
     "predicted_queue_delay_at_admission_ms=${observation.predictedQueueDelayMs} " +
     "predicted_deadline_miss=${observation.predictedDeadlineMiss} " +
     "predicted_stream_makespan_ms=${predictedCost.streamMakespanMs} " +
+    "predicted_p95_e2e_ms=${predictedCost.p95E2eMs ?: -1.0} " +
+    "predicted_p95_ttfs_ms=${predictedCost.p95TtfsMs ?: -1.0} " +
+    "predicted_avg_energy_mj=${predictedCost.avgEnergyMj ?: -1.0} " +
+    "predicted_copy_bytes=${predictedCost.copyBytes ?: -1L} " +
+    "predicted_quality_loss=${predictedCost.qualityLoss ?: -1.0} " +
     "predicted_p95_queue_ms=${predictedCost.p95QueueDelayMs} " +
     "predicted_deadline_miss_rate=${predictedCost.deadlineMissRate}"
 }
@@ -62,9 +67,23 @@ internal fun buildMemoryAdmissionLogMessage(
     "reserved_after_admission_bytes=${observation.reservedBytesAfterAdmission} " +
     "decision=${observation.decision.type} " +
     "reason=${observation.reason.replace(' ', '_')} " +
+    "total_added_latency_ms=${observation.decision.totalAddedLatencyMs} " +
+    "total_quality_loss=${observation.decision.totalQualityLoss} " +
     "applied_actions=${observation.decision.appliedActions.joinToString(",") { it.id }.ifBlank { "none" }} " +
     "effective_responder_max_tokens=${observation.decision.effectiveResponderMaxTokens ?: -1} " +
     "effective_retrieval_top_k=${observation.decision.effectiveRetrievalTopK ?: -1}"
+}
+
+internal fun buildStreamFallbackLogMessage(
+  workflowId: String,
+  plan: GraphPilotExecutionPlan,
+  fromStageId: String,
+  toStageId: String,
+  fallbackReason: String,
+): String {
+  return "GRAPHPILOT_STREAM_FALLBACK workflow=$workflowId plan_id=${plan.plan_id} state_id=${plan.state_id} " +
+    "from_stage=$fromStageId to_stage=$toStageId fallback_reason=$fallbackReason " +
+    "remediation=regenerate_candidate_plan_registry_with_explicit_chunk_sizes_or_disable_the_chunk_stream_edge"
 }
 
 private data class GraphPilotExecutionKnobs(
@@ -122,6 +141,8 @@ class GraphPilotCoordinator(
   private val memoryBudget: GraphPilotMemoryBudget = GraphPilotMemoryBudget(totalBytes = mebibytes(512), marginBytes = mebibytes(64)),
   private val memoryController: GraphPilotMemoryAdmissionController = GraphPilotMemoryAdmissionController(latencyPenalty = 0.01),
   private val memoryProfileEstimator: GraphPilotMemoryProfileEstimator = GraphPilotMemoryProfileEstimator(),
+  private val thermalPlanBank: GraphPilotThermalPlanBank = GraphPilotThermalPlanBank(),
+  private val thermalSlowdownProvider: suspend () -> Double = { 1.0 },
 ) : AutoCloseable {
   private val json = JsonCodec.instance
   private val planStore = GraphPilotPlanStore()
@@ -156,9 +177,23 @@ class GraphPilotCoordinator(
     }
   }
 
+  private suspend fun resolveStateId(requestedStateId: String): String {
+    if (requestedStateId != "auto") {
+      return requestedStateId
+    }
+    val activeReservedBytes = memoryManager.activeReservedBytes()
+    val freeBytes = (memoryBudget.usableBytes - activeReservedBytes).coerceAtLeast(0L)
+    return thermalPlanBank.selectState(
+      slowdownFactor = thermalSlowdownProvider(),
+      freeBytes = freeBytes,
+      usableBytes = memoryBudget.usableBytes,
+    ).stateId
+  }
+
   suspend fun runWorkflowAVoiceOnly(stateId: String = "cool"): GraphPilotRunResult {
     val workflowId = "workflow_a_voice_only"
-    val plan = planStore.loadPlan(workflowId, stateId)
+    val effectiveStateId = resolveStateId(stateId)
+    val plan = planStore.loadPlan(workflowId, effectiveStateId)
     val predictedCost = plan.requirePredictedStreamCost()
     return runWithMemoryAdmission(workflowId, plan) { memoryObservation ->
       val knobs = memoryObservation.decision.toExecutionKnobs()
@@ -171,8 +206,17 @@ class GraphPilotCoordinator(
 
         requireFixedBackend(plan, "asr.primary", "cpu", "WhisperSttEngine is CPU-only in GraphPilotCoordinator.")
         requireFixedBackend(plan, "tts.primary", "cpu", "AndroidTtsSpeaker is CPU-only in GraphPilotCoordinator.")
-        val transcript = runAsr(wav, timings)
-        val plannerText = runPlanner(transcript, plan.textBackend("planner.primary"), timings)
+        val asrPlanner =
+          runAsrPlannerWithOptionalChunking(
+            workflowId = workflowId,
+            plan = plan,
+            wav = wav,
+            plannerBackend = plan.textBackend("planner.primary"),
+            timings = timings,
+            totalStartMs = totalStartMs,
+          )
+        val transcript = asrPlanner.transcript
+        val plannerText = asrPlanner.plannerText
         val streamedSpeech =
           runResponderWithOptionalStreamingToTts(
             plan = plan,
@@ -189,11 +233,12 @@ class GraphPilotCoordinator(
 
         Log.i(
           TAG,
-          "GRAPHPILOT_METRICS workflow=$workflowId plan_id=${plan.plan_id} state_id=$stateId " +
+          "GRAPHPILOT_METRICS workflow=$workflowId plan_id=${plan.plan_id} state_id=$effectiveStateId " +
             "request_id=${observation.requestId} queue_depth_at_admission=${observation.queueDepthAtAdmission} " +
             "queue_wait_ms=${observation.queueWaitMs} memory_decision=${memoryObservation.decision.type} " +
             "memory_effective_required_bytes=${memoryObservation.decision.effectiveRequiredBytes} " +
             "stage_backends=${encodeMap(stageBackends)} stage_timings_ms=${encodeLongMap(timings)} total_ms=$totalMs " +
+            "planner_first_partial_ms=${asrPlanner.plannerFirstPartialOffsetMs ?: -1} asr_chunk_count=${asrPlanner.asrChunkCount} " +
             "ttft_ms=${streamedSpeech.ttftMs ?: -1} tts_first_chunk_queued_ms=${streamedSpeech.ttsFirstChunkQueuedMs ?: -1} " +
             "tts_first_audio_ms=${streamedSpeech.ttsFirstAudioMs ?: -1} vlm_prefill_ms=0 vlm_decode_ms=0",
         )
@@ -201,7 +246,7 @@ class GraphPilotCoordinator(
         GraphPilotRunResult(
           workflowId = workflowId,
           planId = plan.plan_id,
-          stateId = stateId,
+          stateId = effectiveStateId,
           requestId = observation.requestId,
           queueDepthAtAdmission = observation.queueDepthAtAdmission,
           predictedQueueDelayAtAdmissionMs = observation.predictedQueueDelayMs,
@@ -238,7 +283,8 @@ class GraphPilotCoordinator(
 
   suspend fun runWorkflowBVoiceVision(stateId: String = "cool"): GraphPilotRunResult {
     val workflowId = "workflow_b_voice_vision"
-    val plan = planStore.loadPlan(workflowId, stateId)
+    val effectiveStateId = resolveStateId(stateId)
+    val plan = planStore.loadPlan(workflowId, effectiveStateId)
     val predictedCost = plan.requirePredictedStreamCost()
     return runWithMemoryAdmission(workflowId, plan) { memoryObservation ->
       val knobs = memoryObservation.decision.toExecutionKnobs()
@@ -260,8 +306,17 @@ class GraphPilotCoordinator(
 
         requireFixedBackend(plan, "asr.primary", "cpu", "WhisperSttEngine is CPU-only in GraphPilotCoordinator.")
         requireFixedBackend(plan, "tts.primary", "cpu", "AndroidTtsSpeaker is CPU-only in GraphPilotCoordinator.")
-        val transcript = runAsr(wav, timings)
-        val plannerText = runPlanner(transcript, plan.textBackend("planner.primary"), timings)
+        val asrPlanner =
+          runAsrPlannerWithOptionalChunking(
+            workflowId = workflowId,
+            plan = plan,
+            wav = wav,
+            plannerBackend = plan.textBackend("planner.primary"),
+            timings = timings,
+            totalStartMs = totalStartMs,
+          )
+        val transcript = asrPlanner.transcript
+        val plannerText = asrPlanner.plannerText
         val plannedVlmBackend = plan.vlmBackendTarget()
         val (vlmText, metrics, ttftMs) = runVlm(transcript, image, plannedVlmBackend, timings, maxOutputTokens = knobs.vlmMaxOutputTokens)
         val actualVlmBackend = metrics.backend_status.backend_config_actual.name.lowercase()
@@ -286,11 +341,12 @@ class GraphPilotCoordinator(
 
         Log.i(
           TAG,
-          "GRAPHPILOT_METRICS workflow=$workflowId plan_id=${plan.plan_id} state_id=$stateId " +
+          "GRAPHPILOT_METRICS workflow=$workflowId plan_id=${plan.plan_id} state_id=$effectiveStateId " +
             "request_id=${observation.requestId} queue_depth_at_admission=${observation.queueDepthAtAdmission} " +
             "queue_wait_ms=${observation.queueWaitMs} memory_decision=${memoryObservation.decision.type} " +
             "memory_effective_required_bytes=${memoryObservation.decision.effectiveRequiredBytes} " +
             "stage_backends=${encodeMap(stageBackends)} stage_timings_ms=${encodeLongMap(timings)} total_ms=$totalMs " +
+            "planner_first_partial_ms=${asrPlanner.plannerFirstPartialOffsetMs ?: -1} asr_chunk_count=${asrPlanner.asrChunkCount} " +
             "ttft_ms=${ttftMs ?: streamedSpeech.ttftMs ?: -1} tts_first_chunk_queued_ms=${streamedSpeech.ttsFirstChunkQueuedMs ?: -1} " +
             "tts_first_audio_ms=${streamedSpeech.ttsFirstAudioMs ?: -1} " +
             "vlm_prefill_ms=${metrics.stage_timings.prefill_ms} vlm_decode_ms=${metrics.stage_timings.decode_ms}",
@@ -299,7 +355,7 @@ class GraphPilotCoordinator(
         GraphPilotRunResult(
           workflowId = workflowId,
           planId = plan.plan_id,
-          stateId = stateId,
+          stateId = effectiveStateId,
           requestId = observation.requestId,
           queueDepthAtAdmission = observation.queueDepthAtAdmission,
           predictedQueueDelayAtAdmissionMs = observation.predictedQueueDelayMs,
@@ -336,7 +392,8 @@ class GraphPilotCoordinator(
 
   suspend fun runWorkflowCVoiceVisionRetrieval(stateId: String = "cool"): GraphPilotRunResult = coroutineScope {
     val workflowId = "workflow_c_voice_vision_retrieval"
-    val plan = planStore.loadPlan(workflowId, stateId)
+    val effectiveStateId = resolveStateId(stateId)
+    val plan = planStore.loadPlan(workflowId, effectiveStateId)
     val predictedCost = plan.requirePredictedStreamCost()
     runWithMemoryAdmission(workflowId, plan) { memoryObservation ->
       val knobs = memoryObservation.decision.toExecutionKnobs()
@@ -359,8 +416,17 @@ class GraphPilotCoordinator(
 
       requireFixedBackend(plan, "asr.primary", "cpu", "WhisperSttEngine is CPU-only in GraphPilotCoordinator.")
       requireFixedBackend(plan, "tts.primary", "cpu", "AndroidTtsSpeaker is CPU-only in GraphPilotCoordinator.")
-      val transcript = runAsr(wav, timings)
-      val plannerText = runPlanner(transcript, plan.textBackend("planner.primary"), timings)
+      val asrPlanner =
+        runAsrPlannerWithOptionalChunking(
+          workflowId = workflowId,
+          plan = plan,
+          wav = wav,
+          plannerBackend = plan.textBackend("planner.primary"),
+          timings = timings,
+          totalStartMs = totalStartMs,
+        )
+      val transcript = asrPlanner.transcript
+      val plannerText = asrPlanner.plannerText
       val retrievalQuery = buildString {
         append(transcript)
         append("\nPlanner summary: ")
@@ -398,12 +464,13 @@ class GraphPilotCoordinator(
 
       Log.i(
         TAG,
-        "GRAPHPILOT_METRICS workflow=$workflowId plan_id=${plan.plan_id} state_id=$stateId " +
+        "GRAPHPILOT_METRICS workflow=$workflowId plan_id=${plan.plan_id} state_id=$effectiveStateId " +
           "request_id=${observation.requestId} queue_depth_at_admission=${observation.queueDepthAtAdmission} " +
           "queue_wait_ms=${observation.queueWaitMs} memory_decision=${memoryObservation.decision.type} " +
           "memory_effective_required_bytes=${memoryObservation.decision.effectiveRequiredBytes} " +
           "stage_backends=${encodeMap(stageBackends)} " +
           "stage_timings_ms=${encodeLongMap(timings)} total_ms=$totalMs " +
+          "planner_first_partial_ms=${asrPlanner.plannerFirstPartialOffsetMs ?: -1} asr_chunk_count=${asrPlanner.asrChunkCount} " +
           "ttft_ms=${ttftMs ?: streamedSpeech.ttftMs ?: -1} tts_first_chunk_queued_ms=${streamedSpeech.ttsFirstChunkQueuedMs ?: -1} " +
           "tts_first_audio_ms=${streamedSpeech.ttsFirstAudioMs ?: -1} " +
           "vlm_prefill_ms=${metrics.stage_timings.prefill_ms} vlm_decode_ms=${metrics.stage_timings.decode_ms}",
@@ -412,7 +479,7 @@ class GraphPilotCoordinator(
       GraphPilotRunResult(
         workflowId = workflowId,
         planId = plan.plan_id,
-        stateId = stateId,
+        stateId = effectiveStateId,
         requestId = observation.requestId,
         queueDepthAtAdmission = observation.queueDepthAtAdmission,
         predictedQueueDelayAtAdmissionMs = observation.predictedQueueDelayMs,
@@ -456,10 +523,57 @@ class GraphPilotCoordinator(
     }
   }
 
-  private suspend fun runAsr(wav: File, timings: MutableMap<String, Long>): String {
+  private suspend fun prepareAsr() {
     val whisperConfigPath = stageConfig("whisper_stt.json")
     stt.ensureInitialized(whisperConfigPath)
     stt.warmup()
+  }
+
+  private suspend fun runAsrPlannerWithOptionalChunking(
+    workflowId: String,
+    plan: GraphPilotExecutionPlan,
+    wav: File,
+    plannerBackend: Backend,
+    timings: MutableMap<String, Long>,
+    totalStartMs: Long,
+  ): GraphPilotAsrPlannerPipelineResult {
+    prepareAsr()
+    val pcm = readWavPcm16Mono16k(wav)
+    val clip = pcm.copyOfRange(0, minOf(pcm.size, 24_000))
+    val chunkSizeMs =
+      if (plan.hasChunkStreamEdge("asr.primary", "planner.primary")) {
+        val configuredChunkSize = plan.chunkSizeOrNull("asr.primary")
+        if (configuredChunkSize == null) {
+          Log.w(
+            TAG,
+            buildStreamFallbackLogMessage(
+              workflowId = workflowId,
+              plan = plan,
+              fromStageId = "asr.primary",
+              toStageId = "planner.primary",
+              fallbackReason = "missing_chunk_size_for_chunk_stream_edge",
+            ),
+          )
+        }
+        configuredChunkSize
+      } else {
+        null
+      }
+    val result =
+      runAsrPlannerPipeline(
+        audioData = clip,
+        chunkSizeMs = chunkSizeMs,
+        totalStartMs = totalStartMs,
+        transcribe = { chunk -> stt.transcribe(chunk) },
+        plan = { transcript -> generatePlannerText(transcript, plannerBackend) },
+      )
+    timings["asr.primary"] = result.asrElapsedMs
+    timings["planner.primary"] = result.plannerElapsedMs
+    return result
+  }
+
+  private suspend fun runAsr(wav: File, timings: MutableMap<String, Long>): String {
+    prepareAsr()
     val pcm = readWavPcm16Mono16k(wav)
     val clip = pcm.copyOfRange(0, minOf(pcm.size, 24_000))
     val startMs = System.currentTimeMillis()
@@ -467,6 +581,21 @@ class GraphPilotCoordinator(
     timings["asr.primary"] = System.currentTimeMillis() - startMs
     check(transcript.isNotEmpty()) { "ASR produced an empty transcript." }
     return transcript
+  }
+
+  private suspend fun generatePlannerText(
+    transcript: String,
+    backend: Backend,
+  ): String {
+    val spec = TextStageModelSpec.planner(backend)
+    textStages.ensureInitialized(spec)
+    val plannerText =
+      textStages.generate(
+        prompt = "User request transcript: $transcript\nReturn a compact plan in one short sentence.",
+        maxOutputTokens = 32,
+      )
+    check(plannerText.isNotBlank()) { "Planner produced an empty plan." }
+    return plannerText
   }
 
   private suspend fun runPlanner(transcript: String, timings: MutableMap<String, Long>): String {
@@ -478,15 +607,9 @@ class GraphPilotCoordinator(
     backend: Backend,
     timings: MutableMap<String, Long>,
   ): String {
-    val spec = TextStageModelSpec.planner(backend)
     val startMs = System.currentTimeMillis()
-    textStages.ensureInitialized(spec)
-    val plannerText = textStages.generate(
-      prompt = "User request transcript: $transcript\nReturn a compact plan in one short sentence.",
-      maxOutputTokens = 32,
-    )
+    val plannerText = generatePlannerText(transcript, backend)
     timings["planner.primary"] = System.currentTimeMillis() - startMs
-    check(plannerText.isNotBlank()) { "Planner produced an empty plan." }
     return plannerText
   }
 

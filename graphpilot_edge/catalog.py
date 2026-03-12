@@ -39,6 +39,7 @@ def load_workflow_catalog(path: Path) -> dict[str, WorkflowDag]:
                 WorkflowEdge(edge["from"], edge["to"], edge["stream_mode"])
                 for edge in workflow.get("edges", ())
             ),
+            chunk_sizes=tuple(sorted((workflow.get("chunk_sizes") or {}).items())),
         )
     return workflows
 

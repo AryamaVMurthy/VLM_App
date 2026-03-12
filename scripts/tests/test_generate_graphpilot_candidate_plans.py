@@ -94,6 +94,7 @@ class GenerateGraphPilotCandidatePlansTest(unittest.TestCase):
                             {
                                 "workflow_id": "workflow_a_voice_only",
                                 "nodes": ["asr.primary", "planner.primary"],
+                                "chunk_sizes": {"asr.primary": 800},
                                 "edges": [
                                     {
                                         "from": "asr.primary",
@@ -194,6 +195,8 @@ class GenerateGraphPilotCandidatePlansTest(unittest.TestCase):
                                 "delta": 0.0,
                                 "eta": 0.0,
                                 "zeta": 0.0,
+                                "xi": 3.0,
+                                "psi": 100.0,
                             }
                         }
                     }
@@ -210,6 +213,8 @@ class GenerateGraphPilotCandidatePlansTest(unittest.TestCase):
                             "delta": [0.0],
                             "eta": [0.0],
                             "zeta": [0.0],
+                            "xi": [1.0],
+                            "psi": [10.0],
                         },
                         "stream_workloads": {
                             "workflow_a_voice_only": {
@@ -259,14 +264,20 @@ class GenerateGraphPilotCandidatePlansTest(unittest.TestCase):
             self.assertEqual(rc, 0)
             payload = json.loads(candidate_registry_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["objective_weights"]["alpha"], 2.0)
+            self.assertEqual(payload["objective_weights"]["xi"], 3.0)
+            self.assertEqual(payload["objective_weights"]["psi"], 100.0)
             self.assertEqual(payload["objective_weights_source"], str(tuning_summary_path.resolve()))
             self.assertEqual(payload["calibration_summary"], str(calibration_summary_path.resolve()))
             self.assertEqual(len(payload["plans"]), 2)
+            self.assertEqual(payload["plans"][0]["chunk_sizes"], {"asr.primary": 800})
             predicted_cost = payload["plans"][0]["predicted_cost"]
             self.assertIn("objective_score", predicted_cost)
             self.assertIn("copy_bytes", predicted_cost)
             self.assertIn("energy_mj", predicted_cost)
             self.assertIn("peak_memory_bytes", predicted_cost)
+            self.assertIn("p95_e2e_ms", predicted_cost)
+            self.assertIn("p95_ttfs_ms", predicted_cost)
+            self.assertIn("avg_energy_mj", predicted_cost)
             self.assertIn("p95_queue_delay_ms", predicted_cost)
             self.assertIn("deadline_miss_rate", predicted_cost)
             self.assertEqual(predicted_cost["makespan_ms"], 255)

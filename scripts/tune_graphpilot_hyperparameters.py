@@ -37,12 +37,14 @@ def expand_weight_grid(grid: dict[str, list[float]]) -> list[dict[str, float]]:
 def candidate_objective(plan: dict[str, Any], weights: ObjectiveWeights) -> float:
     predicted = plan.get("predicted_cost", {})
     return compute_objective_score(
-        p95_e2e_ms=float(predicted.get("makespan_ms", 0.0)),
-        p95_ttfs_ms=float(predicted.get("ttfs_ms", predicted.get("makespan_ms", 0.0))),
-        avg_energy_mj=float(predicted.get("energy_mj", 0.0)),
-        peak_memory_bytes=int(float(predicted.get("memory_mb", 0.0)) * 1024 * 1024),
+        p95_e2e_ms=float(predicted.get("p95_e2e_ms", predicted.get("makespan_ms", 0.0))),
+        p95_ttfs_ms=float(predicted.get("p95_ttfs_ms", predicted.get("ttfs_ms", predicted.get("makespan_ms", 0.0)))),
+        avg_energy_mj=float(predicted.get("avg_energy_mj", predicted.get("energy_mj", 0.0))),
+        peak_memory_bytes=int(predicted.get("peak_memory_bytes", float(predicted.get("memory_mb", 0.0)) * 1024 * 1024)),
         copy_bytes=int(predicted.get("copy_bytes", 0)),
         quality_loss=float(predicted.get("quality_loss", 0.0)),
+        p95_queue_delay_ms=float(predicted.get("p95_queue_delay_ms", 0.0)),
+        deadline_miss_rate=float(predicted.get("deadline_miss_rate", 0.0)),
         weights=weights,
     )
 
@@ -55,6 +57,8 @@ def actual_objective(workflow: dict[str, Any], weights: ObjectiveWeights) -> flo
         peak_memory_bytes=0,
         copy_bytes=0,
         quality_loss=0.0,
+        p95_queue_delay_ms=float(workflow.get("p95_queue_delay_ms", 0.0)),
+        deadline_miss_rate=float(workflow.get("deadline_miss_rate", 0.0)),
         weights=weights,
     )
 

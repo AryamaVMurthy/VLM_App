@@ -40,6 +40,8 @@ class GraphPilotRuntimeSchedulerTest {
     assertThat(value).isEqualTo("ok")
     assertThat(observation.queueDepthAtAdmission).isEqualTo(0)
     assertThat(observation.predictedQueueDelayMs).isEqualTo(0.0)
+    assertThat(observation.requiredBackends).containsExactly("cpu")
+    assertThat(observation.priorityScore).isGreaterThan(0.0)
     assertThat(observation.queueWaitMs).isEqualTo(0L)
     assertThat(observation.admissionDecision).isEqualTo(GraphPilotAdmissionDecision.ADMIT)
   }

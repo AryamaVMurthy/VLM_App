@@ -16,6 +16,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from graphpilot_edge.catalog import load_stage_catalog, load_workflow_catalog, resolve_feasible_backends
 from graphpilot_edge.cost_model import ObjectiveWeights, SimulationCalibration
+from graphpilot_edge.errors import ValidationError
 from graphpilot_edge.models import RequestSpec
 from graphpilot_edge.plan_bank import load_plan_bank, select_plan_for_state
 from graphpilot_edge.planner import build_stage_options, enumerate_and_rank_plans
@@ -61,6 +62,19 @@ def select_workflow_ids(workflows: dict[str, object], backend_matrix: dict[str, 
     return selected
 
 
+def resolve_workflow_chunk_sizes(workflow_id: str, workflow: Any) -> dict[str, int]:
+    chunk_sizes = {stage_id: size for stage_id, size in getattr(workflow, "chunk_sizes", ())}
+    for edge in workflow.edges:
+        if edge.stream_mode != "chunk":
+            continue
+        if edge.source_stage_id not in chunk_sizes:
+            raise ValidationError(
+                f"Workflow '{workflow_id}' declares chunk stream edge "
+                f"'{edge.source_stage_id}->{edge.target_stage_id}' without chunk_sizes['{edge.source_stage_id}']."
+            )
+    return chunk_sizes
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workflow-path", type=Path, default=WORKFLOW_PATH)
@@ -85,7 +99,7 @@ def resolve_objective_weights(
     if optimization_config:
         grid = optimization_config.get("objective_weight_grid") or {}
         defaults: dict[str, float] = {}
-        for key in ("alpha", "beta", "gamma", "delta", "eta", "zeta"):
+        for key in ("alpha", "beta", "gamma", "delta", "eta", "zeta", "xi", "psi"):
             values = grid.get(key)
             if not values:
                 raise ValueError(
@@ -94,7 +108,7 @@ def resolve_objective_weights(
                 )
             defaults[key] = float(values[0])
         return ObjectiveWeights(**defaults)
-    return ObjectiveWeights(alpha=1.0, beta=1.0, gamma=0.0, delta=0.0, eta=0.0, zeta=0.0)
+    return ObjectiveWeights(alpha=1.0, beta=1.0, gamma=0.0, delta=0.0, eta=0.0, zeta=0.0, xi=1.0, psi=1.0)
 
 
 def resolve_simulation_calibration(
@@ -197,8 +211,11 @@ def main(argv: list[str] | None = None) -> int:
                         "copy_bytes": simulation_result.copy_bytes,
                         "copy_time_ms": simulation_result.copy_time_ms,
                         "energy_mj": simulation_result.energy_mj,
+                        "avg_energy_mj": simulation_result.avg_energy_mj,
                         "ttft_ms": simulation_result.ttft_ms,
                         "ttfs_ms": simulation_result.ttfs_ms,
+                        "p95_e2e_ms": simulation_result.p95_e2e_ms,
+                        "p95_ttfs_ms": simulation_result.p95_ttfs_ms,
                         "quality_loss": simulation_result.quality_loss,
                         "objective_score": simulation_result.objective_score,
                     }
@@ -219,6 +236,9 @@ def main(argv: list[str] | None = None) -> int:
                 predicted_cost.update(
                     {
                         "stream_makespan_ms": stream_result.makespan_ms,
+                        "p95_e2e_ms": stream_result.p95_e2e_ms,
+                        "p95_ttfs_ms": stream_result.p95_ttfs_ms,
+                        "avg_energy_mj": stream_result.avg_energy_mj,
                         "p95_queue_delay_ms": stream_result.p95_queue_delay_ms,
                         "deadline_miss_rate": stream_result.deadline_miss_rate,
                     }
@@ -243,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
                         }
                         for edge in workflow.edges
                     ],
-                    "chunk_sizes": {},
+                    "chunk_sizes": resolve_workflow_chunk_sizes(workflow_id, workflow),
                     "kv_policy": "sticky_decode",
                     "buffer_policy": "interval_reuse_best_fit",
                     "degradation_policy": "memory_guardrail_v1",
@@ -259,6 +279,8 @@ def main(argv: list[str] | None = None) -> int:
         "delta": objective_weights.delta,
         "eta": objective_weights.eta,
         "zeta": objective_weights.zeta,
+        "xi": objective_weights.xi,
+        "psi": objective_weights.psi,
     }
     registry["objective_weights_source"] = (
         str(tuning_summary_path.resolve())

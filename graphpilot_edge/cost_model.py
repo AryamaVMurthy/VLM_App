@@ -12,6 +12,8 @@ class ObjectiveWeights:
     delta: float
     eta: float
     zeta: float
+    xi: float = 0.0
+    psi: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -104,6 +106,8 @@ def compute_objective_score(
     peak_memory_bytes: int,
     copy_bytes: int,
     quality_loss: float,
+    p95_queue_delay_ms: float = 0.0,
+    deadline_miss_rate: float = 0.0,
     weights: ObjectiveWeights,
 ) -> float:
     return (
@@ -113,4 +117,6 @@ def compute_objective_score(
         + weights.delta * peak_memory_bytes
         + weights.eta * copy_bytes
         + weights.zeta * quality_loss
+        + weights.xi * p95_queue_delay_ms
+        + weights.psi * deadline_miss_rate
     )

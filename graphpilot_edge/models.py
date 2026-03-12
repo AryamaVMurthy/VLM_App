@@ -85,6 +85,11 @@ class SimulationResult:
     ttft_ms: int | None = None
     ttfs_ms: int | None = None
     quality_loss: float = 0.0
+    p95_e2e_ms: float = 0.0
+    p95_ttfs_ms: float = 0.0
+    avg_energy_mj: float = 0.0
+    p95_queue_delay_ms: float = 0.0
+    deadline_miss_rate: float = 0.0
     objective_score: float | None = None
 
 
@@ -123,6 +128,9 @@ class StreamSimulationResult:
     peak_memory_bytes: int = 0
     energy_mj: float = 0.0
     quality_loss: float = 0.0
+    p95_e2e_ms: float = 0.0
+    p95_ttfs_ms: float = 0.0
+    avg_energy_mj: float = 0.0
     objective_score: float | None = None
     p95_queue_delay_ms: float = 0.0
     deadline_miss_rate: float = 0.0

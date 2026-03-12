@@ -62,6 +62,8 @@ data class GraphPilotMemoryDecision(
   val requiredBytes: Long,
   val effectiveRequiredBytes: Long,
   val appliedActions: List<GraphPilotDegradationOption>,
+  val totalAddedLatencyMs: Double = 0.0,
+  val totalQualityLoss: Double = 0.0,
   val effectiveResponderMaxTokens: Int? = null,
   val effectiveRetrievalTopK: Int? = null,
   val effectiveVlmVisualTokenBudget: Int? = null,
@@ -100,6 +102,8 @@ class GraphPilotMemoryAdmissionController(
         requiredBytes = requiredBytes,
         effectiveRequiredBytes = requiredBytes,
         appliedActions = emptyList(),
+        totalAddedLatencyMs = 0.0,
+        totalQualityLoss = 0.0,
         reason = "Request fits within usable memory budget.",
       )
     }
@@ -143,6 +147,8 @@ class GraphPilotMemoryAdmissionController(
           requiredBytes = requiredBytes,
           effectiveRequiredBytes = effectiveRequiredBytes,
           appliedActions = applied.toList(),
+          totalAddedLatencyMs = applied.sumOf { it.addedLatencyMs },
+          totalQualityLoss = applied.sumOf { it.qualityLoss },
           effectiveResponderMaxTokens = responderMaxTokens,
           effectiveRetrievalTopK = retrievalTopK,
           effectiveVlmVisualTokenBudget = vlmVisualTokenBudget,
@@ -156,6 +162,8 @@ class GraphPilotMemoryAdmissionController(
       requiredBytes = requiredBytes,
       effectiveRequiredBytes = (requiredBytes - freedBytes).coerceAtLeast(0L),
       appliedActions = applied.toList(),
+      totalAddedLatencyMs = applied.sumOf { it.addedLatencyMs },
+      totalQualityLoss = applied.sumOf { it.qualityLoss },
       effectiveResponderMaxTokens = responderMaxTokens,
       effectiveRetrievalTopK = retrievalTopK,
       effectiveVlmVisualTokenBudget = vlmVisualTokenBudget,
@@ -290,6 +298,8 @@ class GraphPilotRuntimeMemoryManager(
           requiredBytes = profile.requiredBytes,
           effectiveRequiredBytes = profile.requiredBytes,
           appliedActions = emptyList(),
+          totalAddedLatencyMs = 0.0,
+          totalQualityLoss = 0.0,
           reason =
             "Request exceeds usable memory budget because active reservations already consumed all usable memory.",
         )

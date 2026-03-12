@@ -24,6 +24,8 @@ class GraphPilotMemoryAdmissionControllerTest {
     assertThat(decision.type).isEqualTo(GraphPilotMemoryDecisionType.ADMIT)
     assertThat(decision.requiredBytes).isEqualTo(700L)
     assertThat(decision.appliedActions).isEmpty()
+    assertThat(decision.totalAddedLatencyMs).isEqualTo(0.0)
+    assertThat(decision.totalQualityLoss).isEqualTo(0.0)
   }
 
   @Test
@@ -61,6 +63,8 @@ class GraphPilotMemoryAdmissionControllerTest {
     assertThat(decision.appliedActions.map { it.id }).containsExactly("reduce_vlm_tokens")
     assertThat(decision.effectiveRequiredBytes).isEqualTo(750L)
     assertThat(decision.effectiveVlmVisualTokenBudget).isEqualTo(128)
+    assertThat(decision.totalAddedLatencyMs).isEqualTo(5.0)
+    assertThat(decision.totalQualityLoss).isEqualTo(0.2)
   }
 
   @Test
@@ -90,5 +94,7 @@ class GraphPilotMemoryAdmissionControllerTest {
     assertThat(decision.type).isEqualTo(GraphPilotMemoryDecisionType.REJECT)
     assertThat(decision.effectiveRequiredBytes).isEqualTo(1300L)
     assertThat(decision.reason).contains("memory budget")
+    assertThat(decision.totalAddedLatencyMs).isEqualTo(1.0)
+    assertThat(decision.totalQualityLoss).isEqualTo(0.1)
   }
 }

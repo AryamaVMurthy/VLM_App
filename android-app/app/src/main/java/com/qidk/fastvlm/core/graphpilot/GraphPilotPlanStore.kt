@@ -29,12 +29,30 @@ data class GraphPilotExecutionPlan(
   val degradation_policy: String = "memory_guardrail_v1",
   @SerialName("predicted_cost") val predictedCost: GraphPilotPredictedCost? = null,
 ) {
-  fun hasTokenStreamEdge(fromStageId: String, toStageId: String): Boolean {
+  fun hasStreamEdge(fromStageId: String, toStageId: String, streamMode: String): Boolean {
     return stream_edges.any { edge ->
       edge.from == fromStageId &&
         edge.to == toStageId &&
-        edge.streamMode.equals("token", ignoreCase = true)
+        edge.streamMode.equals(streamMode, ignoreCase = true)
     }
+  }
+
+  fun hasTokenStreamEdge(fromStageId: String, toStageId: String): Boolean {
+    return hasStreamEdge(fromStageId, toStageId, "token")
+  }
+
+  fun hasChunkStreamEdge(fromStageId: String, toStageId: String): Boolean {
+    return hasStreamEdge(fromStageId, toStageId, "chunk")
+  }
+
+  fun chunkSizeOrNull(stageId: String): Int? = chunk_sizes[stageId]
+
+  fun requireChunkSize(stageId: String): Int {
+    return chunkSizeOrNull(stageId)
+      ?: error(
+        "GraphPilot execution plan '${plan_id}' is missing chunk_sizes['${stageId}']. " +
+          "Remediation: regenerate candidate_plan_registry.json with explicit chunk_sizes for every chunk-stream source stage and restage it to ${DEFAULT_PLAN_REGISTRY_PATH}.",
+      )
   }
 
   fun requirePredictedStreamCost(): GraphPilotPredictedCost {
@@ -100,12 +118,18 @@ data class GraphPilotExecutionPlan(
 @Serializable
 data class GraphPilotPredictedCost(
   @SerialName("stream_makespan_ms") val streamMakespanMs: Double? = null,
+  @SerialName("p95_e2e_ms") val p95E2eMs: Double? = null,
+  @SerialName("p95_ttfs_ms") val p95TtfsMs: Double? = null,
+  @SerialName("avg_energy_mj") val avgEnergyMj: Double? = null,
+  @SerialName("copy_bytes") val copyBytes: Long? = null,
+  @SerialName("quality_loss") val qualityLoss: Double? = null,
   @SerialName("p95_queue_delay_ms") val p95QueueDelayMs: Double? = null,
   @SerialName("deadline_miss_rate") val deadlineMissRate: Double? = null,
   @SerialName("memory_mb") val memoryMb: Int? = null,
   @SerialName("peak_memory_bytes") val peakMemoryBytes: Long? = null,
   @SerialName("ttft_ms") val ttftMs: Double? = null,
   @SerialName("ttfs_ms") val ttfsMs: Double? = null,
+  @SerialName("objective_score") val objectiveScore: Double? = null,
 )
 
 @Serializable

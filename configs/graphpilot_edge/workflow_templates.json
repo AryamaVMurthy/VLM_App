@@ -11,6 +11,9 @@
         "responder.primary",
         "tts.primary"
       ],
+      "chunk_sizes": {
+        "asr.primary": 800
+      },
       "edges": [
         {
           "from": "asr.primary",
@@ -39,6 +42,9 @@
         "responder.primary",
         "tts.primary"
       ],
+      "chunk_sizes": {
+        "asr.primary": 800
+      },
       "edges": [
         {
           "from": "asr.primary",
@@ -73,6 +79,9 @@
         "responder.primary",
         "tts.primary"
       ],
+      "chunk_sizes": {
+        "asr.primary": 800
+      },
       "edges": [
         {
           "from": "asr.primary",

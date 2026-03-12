@@ -107,6 +107,8 @@ class GraphPilotCostModelTest(unittest.TestCase):
             peak_memory_bytes=100 * 1024 * 1024,
             copy_bytes=10 * 1024 * 1024,
             quality_loss=0.05,
+            p95_queue_delay_ms=300.0,
+            deadline_miss_rate=0.25,
             weights=ObjectiveWeights(
                 alpha=1.0,
                 beta=2.0,
@@ -114,10 +116,12 @@ class GraphPilotCostModelTest(unittest.TestCase):
                 delta=1e-6,
                 eta=1e-6,
                 zeta=1000.0,
+                xi=3.0,
+                psi=400.0,
             ),
         )
-        self.assertGreater(score, 2865.0)
-        self.assertLess(score, 2866.0)
+        self.assertGreater(score, 3865.0)
+        self.assertLess(score, 3866.0)
 
 
 if __name__ == "__main__":

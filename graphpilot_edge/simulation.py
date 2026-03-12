@@ -213,6 +213,8 @@ def simulate_candidate_plan(
             peak_memory_bytes=allocation.peak_bytes,
             copy_bytes=copy_bytes,
             quality_loss=quality_loss,
+            p95_queue_delay_ms=0.0,
+            deadline_miss_rate=0.0,
             weights=objective_weights,
         )
     return SimulationResult(
@@ -228,6 +230,11 @@ def simulate_candidate_plan(
         ttft_ms=ttft_ms,
         ttfs_ms=ttfs_ms,
         quality_loss=quality_loss,
+        p95_e2e_ms=float(makespan_ms),
+        p95_ttfs_ms=float(ttfs_ms if ttfs_ms is not None else makespan_ms),
+        avg_energy_mj=energy_mj,
+        p95_queue_delay_ms=0.0,
+        deadline_miss_rate=0.0,
         objective_score=objective_score,
     )
 
@@ -430,15 +437,22 @@ def simulate_request_stream(
         - min(request.arrival_ms for request in request_list)
         + orchestration_overhead_ms
     )
+    p95_e2e_ms = _percentile(request_makespans, 0.95)
+    p95_ttfs_ms = _percentile(ttfs_values or request_makespans, 0.95)
+    avg_energy_mj = energy_mj / len(request_list)
+    p95_queue_delay_ms = _percentile(queue_delays, 0.95)
+    deadline_miss_rate = deadline_misses / len(request_list)
     objective_score = None
     if objective_weights is not None:
         objective_score = compute_objective_score(
-            p95_e2e_ms=_percentile(request_makespans, 0.95),
-            p95_ttfs_ms=_percentile(ttfs_values or request_makespans, 0.95),
-            avg_energy_mj=energy_mj / len(request_list),
+            p95_e2e_ms=p95_e2e_ms,
+            p95_ttfs_ms=p95_ttfs_ms,
+            avg_energy_mj=avg_energy_mj,
             peak_memory_bytes=allocation.peak_bytes,
             copy_bytes=copy_bytes,
             quality_loss=quality_loss / len(request_list),
+            p95_queue_delay_ms=p95_queue_delay_ms,
+            deadline_miss_rate=deadline_miss_rate,
             weights=objective_weights,
         )
     return StreamSimulationResult(
@@ -450,7 +464,10 @@ def simulate_request_stream(
         peak_memory_bytes=allocation.peak_bytes,
         energy_mj=energy_mj,
         quality_loss=quality_loss,
+        p95_e2e_ms=p95_e2e_ms,
+        p95_ttfs_ms=p95_ttfs_ms,
+        avg_energy_mj=avg_energy_mj,
         objective_score=objective_score,
-        p95_queue_delay_ms=_percentile(queue_delays, 0.95),
-        deadline_miss_rate=deadline_misses / len(request_list),
+        p95_queue_delay_ms=p95_queue_delay_ms,
+        deadline_miss_rate=deadline_miss_rate,
     )
