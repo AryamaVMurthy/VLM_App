@@ -1,0 +1,276 @@
+import importlib.util
+import json
+import pathlib
+import tempfile
+import sys
+import unittest
+
+
+def load_module():
+    module_path = pathlib.Path(__file__).resolve().parents[1] / "generate_graphpilot_candidate_plans.py"
+    spec = importlib.util.spec_from_file_location(
+        "generate_graphpilot_candidate_plans", module_path
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class GenerateGraphPilotCandidatePlansTest(unittest.TestCase):
+    def setUp(self):
+        self.module = load_module()
+
+    def test_resolve_latest_analysis_summary_picks_newest_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            older = root / "graphpilot_cost_calibration_20260311_010000"
+            newer = root / "graphpilot_cost_calibration_20260311_020000"
+            older.mkdir()
+            newer.mkdir()
+            (older / "summary.json").write_text("{}", encoding="utf-8")
+            (newer / "summary.json").write_text("{}", encoding="utf-8")
+
+            resolved = self.module.resolve_latest_analysis_summary(root, "graphpilot_cost_calibration")
+
+            self.assertEqual(resolved, newer / "summary.json")
+
+    def test_select_workflows_skips_infeasible_retrieval_workflow(self):
+        workflows = {
+            "workflow_a_voice_only": object(),
+            "workflow_c_voice_vision_retrieval": object(),
+        }
+        matrix = {
+            "stages": [
+                {
+                    "stage_id": "retrieval.embedder.primary",
+                    "backends": {
+                        "cpu": {"status": "infeasible_missing_artifact"},
+                        "gpu": {"status": "infeasible_missing_artifact"},
+                        "npu": {"status": "infeasible_missing_artifact"},
+                    },
+                }
+            ]
+        }
+        selected = self.module.select_workflow_ids(workflows, matrix)
+        self.assertEqual(selected, ["workflow_a_voice_only"])
+
+    def test_resolve_objective_weights_prefers_tuned_weights(self):
+        weights = self.module.resolve_objective_weights(
+            {
+                "best_objective_weights": {
+                    "weights": {
+                        "alpha": 2.0,
+                        "beta": 1.0,
+                        "gamma": 0.0,
+                        "delta": 0.0,
+                        "eta": 0.0,
+                        "zeta": 0.0,
+                    }
+                }
+            }
+        )
+        self.assertEqual(weights.alpha, 2.0)
+        self.assertEqual(weights.beta, 1.0)
+
+    def test_main_emits_objective_aware_predicted_costs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            workflow_path = root / "workflow_templates.json"
+            stage_path = root / "stage_catalog.json"
+            plan_bank_path = root / "plan_bank_templates.json"
+            backend_matrix_path = root / "backend_feasibility_matrix.json"
+            profiler_registry_path = root / "profiler_registry.json"
+            candidate_registry_path = root / "candidate_plan_registry.json"
+            tuning_summary_path = root / "tuning_summary.json"
+            optimization_config_path = root / "optimization_defaults.json"
+            calibration_summary_path = root / "calibration_summary.json"
+
+            workflow_path.write_text(
+                json.dumps(
+                    {
+                        "workflows": [
+                            {
+                                "workflow_id": "workflow_a_voice_only",
+                                "nodes": ["asr.primary", "planner.primary"],
+                                "edges": [
+                                    {
+                                        "from": "asr.primary",
+                                        "to": "planner.primary",
+                                        "stream_mode": "chunk",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            stage_path.write_text(
+                json.dumps(
+                    {
+                        "stages": [
+                            {"stage_id": "asr.primary", "role": "asr"},
+                            {"stage_id": "planner.primary", "role": "planner"},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            plan_bank_path.write_text(
+                json.dumps(
+                    {
+                        "plan_bank_states": [
+                            {"state_id": "cool"},
+                            {"state_id": "warm"},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            backend_matrix_path.write_text(
+                json.dumps(
+                    {
+                        "stages": [
+                            {
+                                "stage_id": "asr.primary",
+                                "backends": {"cpu": {"status": "feasible_smoke_pass"}},
+                            },
+                            {
+                                "stage_id": "planner.primary",
+                                "backends": {"cpu": {"status": "feasible_smoke_pass"}},
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            profiler_registry_path.write_text(
+                json.dumps(
+                    {
+                        "entries": [
+                            {
+                                "stage_id": "asr.primary",
+                                "variant": "whisper_stt",
+                                "backend": "cpu",
+                                "metrics": {
+                                    "warm_latency_ms": 100,
+                                    "peak_memory_bytes": 1048576,
+                                    "output_bytes": 2048,
+                                    "average_power_mw": 1200.0,
+                                    "quality_loss": 0.0,
+                                    "compile_cost_ms": 5,
+                                },
+                            },
+                            {
+                                "stage_id": "planner.primary",
+                                "variant": "gemma3_1b_it",
+                                "backend": "cpu",
+                                "metrics": {
+                                    "warm_latency_ms": 50,
+                                    "peak_memory_bytes": 524288,
+                                    "output_bytes": 1024,
+                                    "average_power_mw": 900.0,
+                                    "quality_loss": 0.0,
+                                    "compile_cost_ms": 3,
+                                    "ttft_ms": 45,
+                                },
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            candidate_registry_path.write_text(json.dumps({"plans": []}), encoding="utf-8")
+            tuning_summary_path.write_text(
+                json.dumps(
+                    {
+                        "best_objective_weights": {
+                            "weights": {
+                                "alpha": 2.0,
+                                "beta": 1.0,
+                                "gamma": 0.0,
+                                "delta": 0.0,
+                                "eta": 0.0,
+                                "zeta": 0.0,
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            optimization_config_path.write_text(
+                json.dumps(
+                    {
+                        "objective_weight_grid": {
+                            "alpha": [1.0],
+                            "beta": [0.5],
+                            "gamma": [0.0],
+                            "delta": [0.0],
+                            "eta": [0.0],
+                            "zeta": [0.0],
+                        },
+                        "stream_workloads": {
+                            "workflow_a_voice_only": {
+                                "arrivals_ms": [0, 1],
+                                "deadline_ms": 140,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            calibration_summary_path.write_text(
+                json.dumps(
+                    {
+                        "global_orchestration_overhead_ms": 25.0,
+                        "thermal_scale_by_workflow": {
+                            "workflow_a_voice_only": {"warm_latency_scale": 1.5}
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            rc = self.module.main(
+                [
+                    "--workflow-path",
+                    str(workflow_path),
+                    "--stage-path",
+                    str(stage_path),
+                    "--plan-bank-path",
+                    str(plan_bank_path),
+                    "--backend-matrix",
+                    str(backend_matrix_path),
+                    "--profiler-registry",
+                    str(profiler_registry_path),
+                    "--candidate-registry",
+                    str(candidate_registry_path),
+                    "--optimization-config",
+                    str(optimization_config_path),
+                    "--tuning-summary",
+                    str(tuning_summary_path),
+                    "--calibration-summary",
+                    str(calibration_summary_path),
+                ]
+            )
+
+            self.assertEqual(rc, 0)
+            payload = json.loads(candidate_registry_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["objective_weights"]["alpha"], 2.0)
+            self.assertEqual(payload["objective_weights_source"], str(tuning_summary_path.resolve()))
+            self.assertEqual(payload["calibration_summary"], str(calibration_summary_path.resolve()))
+            self.assertEqual(len(payload["plans"]), 2)
+            predicted_cost = payload["plans"][0]["predicted_cost"]
+            self.assertIn("objective_score", predicted_cost)
+            self.assertIn("copy_bytes", predicted_cost)
+            self.assertIn("energy_mj", predicted_cost)
+            self.assertIn("peak_memory_bytes", predicted_cost)
+            self.assertIn("p95_queue_delay_ms", predicted_cost)
+            self.assertIn("deadline_miss_rate", predicted_cost)
+            self.assertEqual(predicted_cost["makespan_ms"], 255)
+
+
+if __name__ == "__main__":
+    unittest.main()

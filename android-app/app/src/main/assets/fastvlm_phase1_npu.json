@@ -1,0 +1,12 @@
+{
+  "model_id": "local/FastVLM-0.5B-sm8750-runtime",
+  "artifact": "FastVLM-0.5B.qualcomm.sm8750.auxmaskrope_runtime.litertlm",
+  "hf_revision": "local-sm8750-runtime",
+  "sha256": "6a170b9edd1d40f5d035e44c91b7f50855e08a6a89488ab3cabcae7a88fc4f88",
+  "size_bytes": 943161344,
+  "qairt_version": "2.43.0",
+  "supported_soc": "SM8750P",
+  "supported_sdk_int": 35,
+  "preferred_backend": "NPU",
+  "local_mirror_path": "/data/local/tmp/vlm_phase1/FastVLM-0.5B.qualcomm.sm8750.auxmaskrope_runtime.litertlm"
+}

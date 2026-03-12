@@ -1,0 +1,27 @@
+diff --git litert/runtime/accelerators/auto_registration.cc litert/runtime/accelerators/auto_registration.cc
+index 9f759050..7249d516 100644
+--- litert/runtime/accelerators/auto_registration.cc
++++ litert/runtime/accelerators/auto_registration.cc
+@@ -242,6 +242,11 @@ Expected<void> TriggerAcceleratorAutomaticRegistration(
+         gpu_accelerator_registered = true;
+         break;
+       }
++      LITERT_LOG(LITERT_WARNING,
++                 "GPU accelerator(%s) accelerator-def registration failed: %s",
++                 full_plugin_path.c_str(),
++                 registration.Error().Message().c_str());
+       // Try to load a GPU accelerator using `LiteRtRegisterGpuAccelerator`
+       // symbol.
+       registration = RegisterSharedObjectAcceleratorViaFunctionPointer(
+@@ -255,6 +260,11 @@ Expected<void> TriggerAcceleratorAutomaticRegistration(
+         gpu_accelerator_registered = true;
+         break;
+       }
++      LITERT_LOG(LITERT_WARNING,
++                 "GPU accelerator(%s) function-pointer registration failed: %s",
++                 full_plugin_path.c_str(),
++                 registration.Error().Message().c_str());
++ 
+     }
+   }
+   if (!gpu_accelerator_registered) {

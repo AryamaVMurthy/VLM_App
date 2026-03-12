@@ -1,7 +1,9 @@
 package com.qidk.fastvlm.core.speech
 
 import android.content.Context
+import android.content.Intent
 import android.os.Bundle
+import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
@@ -19,6 +21,7 @@ import kotlin.coroutines.resumeWithException
 class AndroidTtsSpeaker(private val context: Context) {
   companion object {
     private const val TAG = "AndroidTtsSpeaker"
+    private const val TTS_SERVICE_ACTION = "android.intent.action.TTS_SERVICE"
     private const val DEFAULT_SPEECH_RATE = 0.94f
     private const val DEFAULT_PITCH = 1.03f
     private val LOCALE_PREFERENCE =
@@ -65,20 +68,41 @@ class AndroidTtsSpeaker(private val context: Context) {
       return@withContext
     }
 
+    val configuredEngine = resolveConfiguredEnginePackage()
+    val installedEngines = discoverInstalledTtsEngines()
+    Log.i(
+      TAG,
+      "Initializing TTS configured_engine=${configuredEngine ?: "<system-default>"} visible_engines=$installedEngines",
+    )
+
     val engine =
       suspendCancellableCoroutine<TextToSpeech> { continuation ->
         lateinit var local: TextToSpeech
         local =
-          TextToSpeech(context) { status ->
-            if (status != TextToSpeech.SUCCESS) {
-              continuation.resumeWithException(
-                IllegalStateException(
-                  "Android TTS initialization failed with status=$status. Remediation: ensure a TTS engine is installed and enabled on device.",
+          if (configuredEngine.isNullOrBlank()) {
+            TextToSpeech(context) { status ->
+              if (status != TextToSpeech.SUCCESS) {
+                continuation.resumeWithException(
+                  IllegalStateException(
+                    "Android TTS initialization failed with status=$status. configured_engine=<system-default> visible_engines=$installedEngines. Remediation: verify Android manifest package visibility for TTS_SERVICE and ensure the configured engine is installed and enabled on device.",
+                  )
                 )
-              )
-              return@TextToSpeech
+                return@TextToSpeech
+              }
+              continuation.resume(local)
             }
-            continuation.resume(local)
+          } else {
+            TextToSpeech(context, { status ->
+              if (status != TextToSpeech.SUCCESS) {
+                continuation.resumeWithException(
+                  IllegalStateException(
+                    "Android TTS initialization failed with status=$status. configured_engine=$configuredEngine visible_engines=$installedEngines. Remediation: verify Android manifest package visibility for TTS_SERVICE and ensure the configured engine is installed and enabled on device.",
+                  )
+                )
+                return@TextToSpeech
+              }
+              continuation.resume(local)
+            }, configuredEngine)
           }
       }
 
@@ -105,6 +129,20 @@ class AndroidTtsSpeaker(private val context: Context) {
 
     tts = engine
     installUtteranceListener(engine)
+  }
+
+  private fun resolveConfiguredEnginePackage(): String? {
+    return Settings.Secure.getString(context.contentResolver, "tts_default_synth")
+      ?.trim()
+      ?.ifEmpty { null }
+  }
+
+  private fun discoverInstalledTtsEngines(): List<String> {
+    return context.packageManager
+      .queryIntentServices(Intent(TTS_SERVICE_ACTION), 0)
+      .mapNotNull { it.serviceInfo?.packageName?.takeIf(String::isNotBlank) }
+      .distinct()
+      .sorted()
   }
 
   suspend fun speak(text: String) = withContext(Dispatchers.Main) {

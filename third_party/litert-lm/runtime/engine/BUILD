@@ -278,6 +278,77 @@ cc_test(
     ],
 )
 
+cc_library(
+    name = "graphpilot_retrieval_lib",
+    srcs = ["graphpilot_retrieval_lib.cc"],
+    hdrs = ["graphpilot_retrieval_lib.h"],
+    deps = [
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_absl//absl/types:span",
+        "@nlohmann_json//:json",
+        "@litert//litert/c/internal:litert_external_litert_buffer_context",
+        "@litert//litert/cc:litert_compiled_model",
+        "@litert//litert/cc:litert_environment",
+        "@litert//litert/cc:litert_macros",
+        "@litert//litert/cc:litert_options",
+        "@litert//litert/cc:litert_tensor_buffer",
+        "//runtime/components:sentencepiece_tokenizer",
+        "//runtime/util:convert_tensor_buffer",
+        "//runtime/util:litert_status_util",
+    ],
+)
+
+cc_test(
+    name = "graphpilot_retrieval_lib_test",
+    srcs = ["graphpilot_retrieval_lib_test.cc"],
+    deps = [
+        ":graphpilot_retrieval_lib",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_binary(
+    name = "graphpilot_retrieval_main",
+    srcs = ["graphpilot_retrieval_main.cc"],
+    additional_linker_inputs = select({
+        "@platforms//os:windows": [
+            "@litert//litert/c:windows_exported_symbols.def",
+        ],
+        "@platforms//os:linux": [":litert_lm_main.exported_symbols"],
+        "//conditions:default": [],
+    }),
+    linkopts = select({
+        "@litert//litert:litert_link_capi_so": [],
+        "@platforms//os:ios": ["-Wl,-exported_symbol,_LiteRt*"],
+        "@platforms//os:macos": ["-Wl,-exported_symbol,_LiteRt*"],
+        "@platforms//os:windows": [
+            "/DEF:$(location @litert//litert/c:windows_exported_symbols.def)",
+        ],
+        "@platforms//os:linux": ["-Wl,--dynamic-list=$(location :litert_lm_main.exported_symbols)"],
+        "//conditions:default": ["-Wl,--export-dynamic-symbol=LiteRt*"],
+    }) + select({
+        "@platforms//os:android": ["-lEGL", "-lGLESv3"],
+        "//conditions:default": [],
+    }),
+    deps = [
+        ":graphpilot_retrieval_lib",
+        "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/flags:parse",
+        "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/log:globals",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_absl//absl/time",
+        "@nlohmann_json//:json",
+        "//runtime/util:litert_status_util",
+    ],
+)
+
 cc_binary(
     name = "litert_lm_main",
     srcs = ["litert_lm_main.cc"],
@@ -425,6 +496,7 @@ cc_binary(
         "//runtime/components/constrained_decoding:llg_constraint_config",
         "//runtime/components/embedding_lookup:embedding_lookup_manager",
         "//runtime/components/preprocessor:stb_image_preprocessor",
+        "//runtime/core:litert_env_options_util",
         "//runtime/core:session_basic",
         "//runtime/executor:litert_compiled_model_executor_utils",
         "//runtime/executor:llm_executor",

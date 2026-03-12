@@ -54,6 +54,7 @@ import kotlin.math.roundToLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
@@ -74,9 +75,10 @@ private const val ROOT_DAEMON_PORT = 21909
 private const val ROOT_DAEMON_CONNECT_TIMEOUT_MS = 1_500
 private const val ROOT_DAEMON_REQUEST_PROTOCOL = "VLM_PHASE1"
 private const val ROOT_DAEMON_DEVICE_DIR = "/data/local/tmp/vlm_phase1"
+private const val EXTERNAL_NPU_DISPATCH_DIR = "/data/local/tmp/vlm_phase1/dispatch_libs"
+private const val EXTERNAL_NPU_HEXAGON_DIR = "/data/local/tmp/vlm_phase1/hexagon-v79"
 private const val ROOT_DAEMON_SETUP_TIMEOUT_MS = 15_000L
 private const val ROOT_DAEMON_ASSET_HANDLER = "daemon/vlm_daemon_handler.sh"
-private const val ROOT_DAEMON_ASSET_BINARY = "daemon/litert_lm_advanced_main"
 private const val ENGINE_MAX_NUM_TOKENS = 768
 private const val VLM_SYSTEM_INSTRUCTION =
   "Answer only from the provided image. If information is not visible, say so. " +
@@ -86,7 +88,6 @@ private const val VLM_SAMPLER_TOP_P = 0.9
 private const val VLM_SAMPLER_TEMPERATURE = 0.2
 private const val VLM_STREAM_DELIVERY_WARN_MS = 250L
 private const val ENABLE_RUNTIME_BENCHMARK = true
-private const val DEV_DAEMON_OPT_IN_FLAG = "dev_enable_root_daemon_bridge.flag"
 private const val VOICE_PREFILL_TIMEOUT_MS = 8_000L
 private const val VOICE_PREFILL_WARMUP_PROMPT = "Observe this image context. Reply with OK."
 private const val VOICE_PREFILL_WARMUP_MAX_TOKENS = 1
@@ -99,6 +100,9 @@ private data class RunningRequest(
 private data class BridgeState(
   val config: FastVlmModelConfig,
   val modelPath: String,
+  val supportedBackends: Set<BackendTarget>,
+  val useRootDaemonForNpu: Boolean = false,
+  val daemonModelPath: String? = null,
 )
 
 private data class PrewarmedConversation(
@@ -157,6 +161,7 @@ class FastVlmNativeBridge(
   private val cancelledRequests = ConcurrentHashMap.newKeySet<Long>()
   private val voicePrefillSessions = ConcurrentHashMap<String, VoicePrefillSession>()
   @Volatile private var prewarmedConversation: PrewarmedConversation? = null
+  @Volatile private var prewarmJob: Job? = null
   @Volatile private var npuLibrariesDir: String? = null
 
   @Volatile private var state: BridgeState? = null
@@ -217,20 +222,70 @@ class FastVlmNativeBridge(
         )
       }
 
-    state = BridgeState(config = config, modelPath = modelPath)
+    val preferredBackend = config.preferred_backend
+    if (preferredBackend == BackendTarget.NPU && isDevRootDaemonBridgeEnabled()) {
+      val daemonModelPath =
+        config.local_mirror_path?.takeIf { File(it).exists() }
+          ?: return InitResult(
+            ok = false,
+            message =
+              "NPU root-daemon mode requires a readable local_mirror_path on device. Remediation: push the pinned NPU artifact to ${ROOT_DAEMON_DEVICE_DIR} and keep local_mirror_path pointing to it.",
+            device_info = compatibility.deviceInfo,
+          )
+      if (!isRootDaemonReachable()) {
+        return InitResult(
+          ok = false,
+          message =
+            "NPU root-daemon bridge is enabled but daemon port ${ROOT_DAEMON_PORT} is unreachable. Remediation: run scripts/start_root_vlm_daemon_adb.sh and retry.",
+          device_info = compatibility.deviceInfo,
+        )
+      }
+      state =
+        BridgeState(
+          config = config,
+          modelPath = modelPath,
+          supportedBackends = setOf(BackendTarget.NPU),
+          useRootDaemonForNpu = true,
+          daemonModelPath = daemonModelPath,
+        )
+      return InitResult(
+        ok = true,
+        model_path = modelPath,
+        preferred_backend = preferredBackend,
+        device_info = compatibility.deviceInfo,
+        message =
+          "Model is provisioned and NPU root-daemon bridge is reachable on ${ROOT_DAEMON_HOST}:${ROOT_DAEMON_PORT}.",
+      )
+    }
 
-    Engine.setNativeMinLogSeverity(LogSeverity.WARNING)
-    val cpuSelfCheckFailure =
+    val supportedBackends = setOf(config.preferred_backend)
+    state =
+      BridgeState(
+        config = config,
+        modelPath = modelPath,
+        supportedBackends = supportedBackends,
+      )
+    Engine.setNativeMinLogSeverity(
+      if (BuildConfig.DEBUG && preferredBackend == BackendTarget.NPU) {
+        LogSeverity.INFO
+      } else {
+        LogSeverity.WARNING
+      }
+    )
+    val selfCheckFailure =
       runCatching {
-        getOrCreateEngine(BackendTarget.CPU, modelPath)
+        if (preferredBackend == BackendTarget.NPU) {
+          prepareNpuRuntimeEnvironment()
+        }
+        getOrCreateEngine(preferredBackend, modelPath)
       }.exceptionOrNull()
-    if (cpuSelfCheckFailure != null) {
+    if (selfCheckFailure != null) {
       state = null
       engines.clear()
       val failureMessage =
-        "CPU self-check failed during LiteRT engine initialization: ${cpuSelfCheckFailure.message}. " +
-          "Remediation: verify model compatibility and LiteRT runtime packaging."
-      Log.e(TAG, "nativeInit: CPU self-check failed: $failureMessage", cpuSelfCheckFailure)
+        "${preferredBackend.name} self-check failed during LiteRT engine initialization: ${selfCheckFailure.message}. " +
+          "Remediation: verify model/runtime packaging for backend=${preferredBackend.name} and ensure the pinned artifact matches the selected backend."
+      Log.e(TAG, "nativeInit: ${preferredBackend.name} self-check failed: $failureMessage", selfCheckFailure)
       return InitResult(
         ok = false,
         message = failureMessage,
@@ -241,13 +296,13 @@ class FastVlmNativeBridge(
     return InitResult(
       ok = true,
       model_path = modelPath,
-      preferred_backend = BackendTarget.CPU,
+      preferred_backend = preferredBackend,
       device_info = compatibility.deviceInfo,
       message =
-        "Model is provisioned and CPU runtime self-check passed. CPU backend is the only enabled execution path in this build.",
+        "Model is provisioned and ${preferredBackend.name} runtime self-check passed.",
     )
       .also {
-        scheduleConversationPrewarm(modelPath = modelPath, backend = BackendTarget.CPU)
+        scheduleConversationPrewarm(modelPath = modelPath, backend = preferredBackend)
       }
   }
 
@@ -267,9 +322,16 @@ class FastVlmNativeBridge(
           se,
         )
       }
-    if (request.preferred_backend != BackendTarget.CPU) {
+    if (request.preferred_backend !in currentState.supportedBackends) {
       throw IllegalArgumentException(
-        "CPU-only build received preferred_backend='${request.preferred_backend}'. Remediation: set preferred_backend=CPU and allow_fallback=false.",
+        "Requested preferred_backend='${request.preferred_backend}' is unsupported by the active model config. " +
+          "Supported backends=${currentState.supportedBackends.sortedBy { it.name }}. Remediation: reinitialize the bridge with a matching config asset.",
+      )
+    }
+    if (request.allow_fallback && BackendTarget.CPU !in currentState.supportedBackends) {
+      throw IllegalArgumentException(
+        "allow_fallback=true is invalid because the active model config does not support CPU fallback. " +
+          "Supported backends=${currentState.supportedBackends.sortedBy { it.name }}. Remediation: set allow_fallback=false or initialize a CPU-capable config.",
       )
     }
 
@@ -286,6 +348,7 @@ class FastVlmNativeBridge(
           executeRequest(
             requestId = requestId,
             request = request,
+            currentState = currentState,
             modelPath = currentState.modelPath,
             callback = callback,
           )
@@ -330,9 +393,10 @@ class FastVlmNativeBridge(
         ?: throw IllegalStateException(
           "Bridge not initialized. Remediation: call nativeInit(...) and ensure it returns ok=true before starting voice prefill.",
         )
-    if (backend != BackendTarget.CPU) {
+    if (backend !in currentState.supportedBackends) {
       throw IllegalArgumentException(
-        "CPU-only build received beginVoicePrefill backend='${backend.name}'. Remediation: pass backend=CPU.",
+        "beginVoicePrefill backend='${backend.name}' is unsupported by the active model config. " +
+          "Supported backends=${currentState.supportedBackends.sortedBy { it.name }}. Remediation: reinitialize the bridge with a matching config asset.",
       )
     }
     val imageFile = File(imagePath)
@@ -419,6 +483,8 @@ class FastVlmNativeBridge(
 
   fun close() {
     scope.cancel()
+    runCatching { prewarmJob?.cancel() }
+    prewarmJob = null
     voicePrefillSessions.values.forEach { session ->
       runCatching { session.conversation.cancelProcess() }
       runCatching { session.conversation.close() }
@@ -435,11 +501,27 @@ class FastVlmNativeBridge(
   private suspend fun executeRequest(
     requestId: Long,
     request: VqaRequest,
+    currentState: BridgeState,
     modelPath: String,
     callback: (String) -> Unit,
   ) {
     val fallbackEvents = mutableListOf<FallbackEvent>()
     val requestStartMs = System.currentTimeMillis()
+    val effectiveRequest =
+      if (currentState.useRootDaemonForNpu && request.preferred_backend == BackendTarget.NPU) {
+        request.copy(image_path = stageImageForRootDaemon(requestId, request.image_path))
+      } else {
+        request
+      }
+    val effectiveModelPath =
+      if (currentState.useRootDaemonForNpu && request.preferred_backend == BackendTarget.NPU) {
+        currentState.daemonModelPath
+          ?: throw IllegalStateException(
+            "Root-daemon NPU mode is missing daemonModelPath. Remediation: reinitialize the bridge with a pinned local_mirror_path.",
+          )
+      } else {
+        modelPath
+      }
 
     emitEvent(
       callback,
@@ -448,8 +530,8 @@ class FastVlmNativeBridge(
         request_id = requestId,
         backend_status =
           BackendStatus(
-            backend_config_requested = request.preferred_backend,
-            backend_config_actual = request.preferred_backend,
+            backend_config_requested = effectiveRequest.preferred_backend,
+            backend_config_actual = effectiveRequest.preferred_backend,
           ),
       ),
     )
@@ -458,9 +540,9 @@ class FastVlmNativeBridge(
       val primaryMetrics =
         runAttempt(
           requestId = requestId,
-          request = request,
-          actualBackend = request.preferred_backend,
-          modelPath = modelPath,
+          request = effectiveRequest,
+          actualBackend = effectiveRequest.preferred_backend,
+          modelPath = effectiveModelPath,
           fallbackEvents = fallbackEvents,
           callback = callback,
         )
@@ -473,13 +555,13 @@ class FastVlmNativeBridge(
       if (isCancelledRequest(requestId, firstFailure)) {
         val cancelledError = cancelledError()
         val cancelledMetrics =
-          buildFailureMetrics(
-            requestId = requestId,
-            request = request,
-            actualBackend = request.preferred_backend,
-            fallbackEvents = fallbackEvents,
-            attemptStartMs = requestStartMs,
-            error = cancelledError,
+        buildFailureMetrics(
+          requestId = requestId,
+          request = effectiveRequest,
+          actualBackend = effectiveRequest.preferred_backend,
+          fallbackEvents = fallbackEvents,
+          attemptStartMs = requestStartMs,
+          error = cancelledError,
           )
         metricsStore.persistRequestMetrics(cancelledMetrics)
         lastMetrics[requestId] = cancelledMetrics
@@ -498,15 +580,15 @@ class FastVlmNativeBridge(
       val primaryFailureMetrics =
         buildFailureMetrics(
           requestId = requestId,
-          request = request,
-          actualBackend = request.preferred_backend,
+          request = effectiveRequest,
+          actualBackend = effectiveRequest.preferred_backend,
           fallbackEvents = fallbackEvents,
           attemptStartMs = requestStartMs,
           error = primaryError,
         )
       metricsStore.persistRequestMetrics(primaryFailureMetrics, attemptTag = "primary_failed")
 
-      if (!request.allow_fallback || request.preferred_backend == BackendTarget.CPU) {
+      if (!request.allow_fallback || request.preferred_backend == BackendTarget.CPU || BackendTarget.CPU !in currentState.supportedBackends) {
         metricsStore.persistRequestMetrics(primaryFailureMetrics)
         lastMetrics[requestId] = primaryFailureMetrics
         emitEvent(
@@ -546,7 +628,7 @@ class FastVlmNativeBridge(
         val fallbackMetrics =
           runAttempt(
             requestId = requestId,
-            request = request,
+            request = effectiveRequest.copy(preferred_backend = BackendTarget.CPU),
             actualBackend = BackendTarget.CPU,
             modelPath = modelPath,
             fallbackEvents = fallbackEvents,
@@ -563,7 +645,7 @@ class FastVlmNativeBridge(
           val cancelledMetrics =
             buildFailureMetrics(
               requestId = requestId,
-              request = request,
+              request = effectiveRequest,
               actualBackend = BackendTarget.CPU,
               fallbackEvents = fallbackEvents,
               attemptStartMs = fallbackStartMs,
@@ -590,7 +672,7 @@ class FastVlmNativeBridge(
         val fallbackFailureMetrics =
           buildFailureMetrics(
             requestId = requestId,
-            request = request,
+            request = effectiveRequest,
             actualBackend = BackendTarget.CPU,
             fallbackEvents = fallbackEvents,
             attemptStartMs = fallbackStartMs,
@@ -683,18 +765,7 @@ class FastVlmNativeBridge(
   }
 
   private fun isDevRootDaemonBridgeEnabled(): Boolean {
-    if (!BuildConfig.DEBUG || !BuildConfig.ENABLE_DEV_ROOT_DAEMON_BRIDGE) {
-      return false
-    }
-    val optInFile = File(context.filesDir, DEV_DAEMON_OPT_IN_FLAG)
-    val enabled = optInFile.exists()
-    if (!enabled) {
-      Log.i(
-        TAG,
-        "Root daemon bridge disabled: create '${optInFile.absolutePath}' to opt-in for debug fallback testing.",
-      )
-    }
-    return enabled
+    return BuildConfig.DEBUG && BuildConfig.ENABLE_DEV_ROOT_DAEMON_BRIDGE
   }
 
   @OptIn(ExperimentalApi::class)
@@ -1094,8 +1165,9 @@ class FastVlmNativeBridge(
       writer.write("${questionBase64}\n")
       writer.write("${request.image_path}\n")
       writer.write("${modelPath}\n")
-      val requestedMaxTokens = request.max_output_tokens.coerceAtLeast(1)
-      writer.write("${requestedMaxTokens}\n")
+      writer.write("${ENGINE_MAX_NUM_TOKENS}\n")
+      val requestedMaxOutputTokens = request.max_output_tokens.coerceAtLeast(1)
+      writer.write("${requestedMaxOutputTokens}\n")
       writer.write("${daemonBackend.name.lowercase()}\n")
       sendMessageCalledMs = System.currentTimeMillis()
       writer.flush()
@@ -1220,14 +1292,16 @@ class FastVlmNativeBridge(
         return
       }
       val stagedDir = File(context.filesDir, "daemon_stage")
-      val stagedHandler = stageDaemonAsset(ROOT_DAEMON_ASSET_HANDLER, File(stagedDir, "vlm_daemon_handler.sh"), executable = true)
-      val stagedBinary = stageDaemonAsset(ROOT_DAEMON_ASSET_BINARY, File(stagedDir, "litert_lm_advanced_main"), executable = true)
+      val stagedHandler =
+        stageDaemonAsset(
+          ROOT_DAEMON_ASSET_HANDLER,
+          File(stagedDir, "vlm_daemon_handler.sh"),
+          executable = true,
+        )
 
       val startScript =
         buildRootDaemonStartScript(
           stagedHandlerPath = stagedHandler.absolutePath,
-          stagedBinaryPath = stagedBinary.absolutePath,
-          nativeLibDir = context.applicationInfo.nativeLibraryDir,
           forceRestart = forceRestart,
         )
 
@@ -1316,8 +1390,6 @@ class FastVlmNativeBridge(
 
   private fun buildRootDaemonStartScript(
     stagedHandlerPath: String,
-    stagedBinaryPath: String,
-    nativeLibDir: String,
     forceRestart: Boolean,
   ): String {
     val deviceHandlerPath = "${ROOT_DAEMON_DEVICE_DIR}/vlm_daemon_handler.sh"
@@ -1337,16 +1409,19 @@ class FastVlmNativeBridge(
       set -eu
       DEVICE_DIR=${shQuote(ROOT_DAEMON_DEVICE_DIR)}
       mkdir -p "${'$'}DEVICE_DIR"
+      if [ ! -x ${shQuote(deviceBinaryPath)} ]; then
+        echo "missing device binary ${deviceBinaryPath}" >&2
+        exit 2
+      fi
       cp ${shQuote(stagedHandlerPath)} ${shQuote(deviceHandlerPath)}
-      cp ${shQuote(stagedBinaryPath)} ${shQuote(deviceBinaryPath)}
       chmod 0755 ${shQuote(deviceHandlerPath)} ${shQuote(deviceBinaryPath)}
       $forceRestartSnippet
-      if toybox netstat -tlpn 2>/dev/null | grep -q ':${ROOT_DAEMON_PORT} '; then
+      if toybox netstat -tlpn 2>/dev/null | awk '${'$'}4 == "127.0.0.1:${ROOT_DAEMON_PORT}" && ${'$'}6 == "LISTEN" { found=1 } END { exit found ? 0 : 1 }'; then
         exit 0
       fi
-      nohup env VLM_NATIVE_LIB_DIR=${shQuote(nativeLibDir)} toybox nc -s 127.0.0.1 -p ${ROOT_DAEMON_PORT} -L ${shQuote(deviceHandlerPath)} >${shQuote(stdoutPath)} 2>${shQuote(stderrPath)} </dev/null &
+      nohup toybox nc -s 127.0.0.1 -p ${ROOT_DAEMON_PORT} -L ${shQuote(deviceHandlerPath)} >${shQuote(stdoutPath)} 2>${shQuote(stderrPath)} </dev/null &
       sleep 1
-      toybox netstat -tlpn 2>/dev/null | grep -q ':${ROOT_DAEMON_PORT} '
+      toybox netstat -tlpn 2>/dev/null | awk '${'$'}4 == "127.0.0.1:${ROOT_DAEMON_PORT}" && ${'$'}6 == "LISTEN" { found=1 } END { exit found ? 0 : 1 }'
     """.trimIndent()
   }
 
@@ -1402,6 +1477,38 @@ class FastVlmNativeBridge(
       stdout = stdout,
       stderr = stderr,
     )
+  }
+
+  private fun stageImageForRootDaemon(requestId: Long, imagePath: String): String {
+    val source = File(imagePath)
+    if (!source.exists()) {
+      throw IllegalStateException(
+        "Root-daemon request image is missing at '${source.absolutePath}'. Remediation: capture or stage the image before invoking the VLM.",
+      )
+    }
+    if (source.absolutePath.startsWith(ROOT_DAEMON_DEVICE_DIR)) {
+      return source.absolutePath
+    }
+    val externalRoot =
+      context.getExternalFilesDir("daemon_inputs")
+        ?: context.externalCacheDir?.resolve("daemon_inputs")
+        ?: throw IllegalStateException(
+          "External storage is unavailable for root-daemon image staging. Remediation: mount external storage or provide an image path already staged for the daemon.",
+        )
+    if (!externalRoot.exists() && !externalRoot.mkdirs()) {
+      throw IllegalStateException(
+        "Failed to create root-daemon input dir '${externalRoot.absolutePath}'. Remediation: verify app external storage access on device.",
+      )
+    }
+    val suffix = source.extension.ifBlank { "bin" }
+    val target = File(externalRoot, "request_${requestId}.${suffix}")
+    source.copyTo(target, overwrite = true)
+    if (!target.setReadable(true, false)) {
+      throw IllegalStateException(
+        "Failed to mark staged daemon image '${target.absolutePath}' as readable. Remediation: verify device filesystem permissions.",
+      )
+    }
+    return target.absolutePath
   }
 
   private fun readRootDaemonLogs(): String {
@@ -1504,6 +1611,7 @@ class FastVlmNativeBridge(
 
   @OptIn(ExperimentalApi::class)
   private suspend fun acquireConversation(engine: Engine, backend: BackendTarget): Conversation {
+    prewarmJob?.join()
     conversationPrewarmMutex.withLock {
       val cached = prewarmedConversation
       if (cached != null) {
@@ -1519,20 +1627,24 @@ class FastVlmNativeBridge(
   }
 
   private fun scheduleConversationPrewarm(modelPath: String, backend: BackendTarget) {
-    scope.launch {
-      runCatching {
-        val engine = getOrCreateEngine(backend, modelPath)
-        val freshConversation = engine.createConversation(conversationConfig = buildConversationConfig())
-        conversationPrewarmMutex.withLock {
-          prewarmedConversation?.let { stale ->
-            runCatching { stale.conversation.close() }
+    prewarmJob?.cancel()
+    prewarmJob =
+      scope.launch {
+        runCatching {
+          val engine = getOrCreateEngine(backend, modelPath)
+          val freshConversation =
+            engine.createConversation(conversationConfig = buildConversationConfig())
+          conversationPrewarmMutex.withLock {
+            prewarmedConversation?.let { stale ->
+              runCatching { stale.conversation.close() }
+            }
+            prewarmedConversation =
+              PrewarmedConversation(backend = backend, conversation = freshConversation)
           }
-          prewarmedConversation = PrewarmedConversation(backend = backend, conversation = freshConversation)
+        }.onFailure { t ->
+          Log.w(TAG, "conversation prewarm failed backend=$backend: ${t.message}")
         }
-      }.onFailure { t ->
-        Log.w(TAG, "conversation prewarm failed backend=$backend: ${t.message}")
       }
-    }
   }
 
   private fun buildTransitionTimings(
@@ -1636,12 +1748,6 @@ class FastVlmNativeBridge(
       )
     }
 
-    val dispatchLib = File(nativeDirFile, "libLiteRtDispatch_Qualcomm.so")
-    if (!dispatchLib.exists()) {
-      throw IllegalStateException(
-        "Missing Qualcomm dispatch library at '${dispatchLib.absolutePath}'. Remediation: rebuild APK with Phase 1 QNN runtime packaging enabled.",
-      )
-    }
     val litertLmJniLib = File(nativeDirFile, "liblitertlm_jni.so")
     if (!litertLmJniLib.exists()) {
       throw IllegalStateException(
@@ -1655,30 +1761,42 @@ class FastVlmNativeBridge(
       )
     }
 
-    val qnnLib = File(nativeDirFile, "libQnnHtp.so")
-    if (!qnnLib.exists()) {
+    val dispatchSourceDir = File(EXTERNAL_NPU_DISPATCH_DIR)
+    if (!dispatchSourceDir.exists()) {
       throw IllegalStateException(
-        "Missing QNN runtime library at '${qnnLib.absolutePath}'. Remediation: package QAIRT arm64 libraries into app jniLibs and reinstall.",
+        "Missing external Qualcomm runtime directory at '${dispatchSourceDir.absolutePath}'. Remediation: push the real SM8750 dispatch runtime bundle to ${EXTERNAL_NPU_DISPATCH_DIR}.",
+      )
+    }
+    val hexagonSourceDir = File(EXTERNAL_NPU_HEXAGON_DIR)
+    if (!hexagonSourceDir.exists()) {
+      throw IllegalStateException(
+        "Missing external Hexagon runtime directory at '${hexagonSourceDir.absolutePath}'. Remediation: push the real SM8750 hexagon-v79 bundle to ${EXTERNAL_NPU_HEXAGON_DIR}.",
       )
     }
 
-    val requiredSkelLibs =
+    val stagedRuntimeDir =
+      stageNpuRuntimeLibraries(
+        listOf(nativeDirFile, dispatchSourceDir, hexagonSourceDir),
+      )
+    val requiredRuntimeLibs =
       listOf(
+        "libLiteRtDispatch_Qualcomm.so",
+        "libQnnHtp.so",
+        "libQnnSystem.so",
+        "libQnnHtpPrepare.so",
         "libQnnHexagonSkel_dspApp.so",
         "libQnnHtpV79.so",
         "libQnnHtpV79Skel.so",
         "libQnnNetRunDirectV79Skel.so",
       )
-    requiredSkelLibs.forEach { name ->
-      val candidate = File(nativeDirFile, name)
+    requiredRuntimeLibs.forEach { name ->
+      val candidate = File(stagedRuntimeDir, name)
       if (!candidate.exists()) {
         throw IllegalStateException(
-          "Missing required Hexagon v79 skel library at '${candidate.absolutePath}'. Remediation: package QAIRT hexagon-v79 unsigned skel libs into app jniLibs and reinstall.",
+          "Missing required staged NPU runtime library '${candidate.absolutePath}'. Remediation: repush the exact SM8750 runtime bundle to ${ROOT_DAEMON_DEVICE_DIR} and retry bridge init.",
         )
       }
     }
-
-    val stagedRuntimeDir = stageNpuRuntimeLibraries(nativeDirFile)
 
     // Keep library presence checks strict, but let LiteRT dispatch own dynamic
     // loading of QNN/LiteRT runtime libs to avoid namespace collisions.
@@ -1720,7 +1838,7 @@ class FastVlmNativeBridge(
     )
   }
 
-  private fun stageNpuRuntimeLibraries(nativeDirFile: File): File {
+  private fun stageNpuRuntimeLibraries(sourceDirs: List<File>): File {
     val stagedDir = File(context.filesDir, "npu_dispatch_libs")
     if (!stagedDir.exists() && !stagedDir.mkdirs()) {
       throw IllegalStateException(
@@ -1728,13 +1846,24 @@ class FastVlmNativeBridge(
       )
     }
 
-    val sourceLibs =
-      nativeDirFile
+    val sourceLibsByName = linkedMapOf<String, File>()
+    sourceDirs.forEach { sourceDir ->
+      if (!sourceDir.exists()) {
+        return@forEach
+      }
+      sourceDir
         .listFiles { file -> file.isFile && file.name.endsWith(".so") }
         ?.sortedBy { it.name }
-        ?: throw IllegalStateException(
-          "No shared libraries found in '${nativeDirFile.absolutePath}'. Remediation: reinstall APK with runtime libraries packaged.",
-        )
+        ?.forEach { file ->
+          sourceLibsByName[file.name] = file
+        }
+    }
+    val sourceLibs = sourceLibsByName.values.toList()
+    if (sourceLibs.isEmpty()) {
+      throw IllegalStateException(
+        "No shared libraries found in the configured NPU runtime sources. Remediation: provision ${EXTERNAL_NPU_DISPATCH_DIR} and ${EXTERNAL_NPU_HEXAGON_DIR} before initializing the NPU path.",
+      )
+    }
 
     val fingerprint =
       buildString {

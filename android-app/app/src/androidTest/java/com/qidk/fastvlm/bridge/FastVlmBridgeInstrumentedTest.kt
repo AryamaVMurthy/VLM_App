@@ -28,7 +28,7 @@ class FastVlmBridgeInstrumentedTest {
   @Test
   fun cpuRequestCompletesWithDoneOrError() = runBlocking {
     val context = InstrumentationRegistry.getInstrumentation().targetContext
-    val configPath = stageRuntimeConfig(context)
+    val configPath = stageRuntimeConfig(context, "fastvlm_phase1.json")
     val config = ModelConfigLoader(json).fromFile(File(configPath))
     provisionModelFromLocalMirror(context, config)
     val imagePath = stageImageForTest(context)
@@ -63,24 +63,79 @@ class FastVlmBridgeInstrumentedTest {
 
     val completed = done.await(90, TimeUnit.SECONDS)
     assertThat(completed).isTrue()
-    assertThat(terminalType).isAnyOf(VqaEventType.DONE, VqaEventType.ERROR)
+    assertThat(terminalType).isEqualTo(VqaEventType.DONE)
 
     val metrics = bridge.nativeGetLastMetrics(requestId)
     Log.i("FastVlmBridgeInstrumentedTest", "metrics=$metrics")
     assertThat(metrics.contains("metrics_not_found")).isFalse()
     assertThat(metrics).contains("\"backend_status\"")
     assertThat(metrics).contains("\"backend_config_actual\":\"CPU\"")
+    assertThat(metrics).doesNotContain("\"primary_backend_failed\"")
+    assertThat(metrics).doesNotContain("\"error\":{")
 
     bridge.close()
   }
 
-  private fun stageRuntimeConfig(context: Context): String {
+  @Test
+  fun npuRequestCompletesWithoutFallback() = runBlocking {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    val configPath = stageRuntimeConfig(context, "fastvlm_phase1_npu.json")
+    val config = ModelConfigLoader(json).fromFile(File(configPath))
+    provisionModelFromLocalMirror(context, config)
+    val imagePath = stageImageForTest(context)
+
+    val bridge = FastVlmNativeBridge(context, MetricsStore(context, json))
+    val init = bridge.nativeInit(configPath)
+    assertThat(init.ok).isTrue()
+    assertThat(init.preferred_backend).isEqualTo(BackendTarget.NPU)
+
+    val request =
+      VqaRequest(
+        question = "Describe this image briefly.",
+        image_path = imagePath,
+        preferred_backend = BackendTarget.NPU,
+        allow_fallback = false,
+      )
+
+    val done = CountDownLatch(1)
+    var terminalType: VqaEventType? = null
+    val requestId =
+      bridge.nativeRunVqa(json.encodeToString(VqaRequest.serializer(), request)) { raw ->
+        val event = json.decodeFromString(VqaEvent.serializer(), raw)
+        when (event.type) {
+          VqaEventType.DONE, VqaEventType.ERROR -> {
+            terminalType = event.type
+            done.countDown()
+          }
+
+          else -> Unit
+        }
+      }
+
+    val completed = done.await(180, TimeUnit.SECONDS)
+    assertThat(completed).isTrue()
+    assertThat(terminalType).isEqualTo(VqaEventType.DONE)
+
+    val metrics = bridge.nativeGetLastMetrics(requestId)
+    Log.i("FastVlmBridgeInstrumentedTest", "npu_metrics=$metrics")
+    assertThat(metrics.contains("metrics_not_found")).isFalse()
+    assertThat(metrics).contains("\"backend_status\"")
+    assertThat(metrics).contains("\"backend_config_requested\":\"NPU\"")
+    assertThat(metrics).contains("\"backend_config_actual\":\"NPU\"")
+    assertThat(metrics).doesNotContain("\"primary_backend_failed\"")
+    assertThat(metrics).doesNotContain("\"fallback_backend_failed\"")
+    assertThat(metrics).doesNotContain("\"error\":{")
+
+    bridge.close()
+  }
+
+  private fun stageRuntimeConfig(context: Context, assetName: String): String {
     val configDir = File(context.filesDir, "configs")
     if (!configDir.exists() && !configDir.mkdirs()) {
       error("Failed to create config dir '${configDir.absolutePath}'")
     }
-    val target = File(configDir, "fastvlm_phase1.json")
-    context.assets.open("fastvlm_phase1.json").use { input ->
+    val target = File(configDir, assetName)
+    context.assets.open(assetName).use { input ->
       target.outputStream().use { output -> input.copyTo(output) }
     }
     return target.absolutePath

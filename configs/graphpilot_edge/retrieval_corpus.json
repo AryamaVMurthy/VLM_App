@@ -1,0 +1,35 @@
+{
+  "corpus_id": "graphpilot_demo_kb_v1",
+  "documents": [
+    {
+      "doc_id": "jfk_inaugural",
+      "title": "Kennedy inaugural address",
+      "text": "John F. Kennedy's 1961 inaugural address included the line: ask not what your country can do for you; ask what you can do for your country."
+    },
+    {
+      "doc_id": "jfk_service",
+      "title": "Public service theme",
+      "text": "The inaugural address urged Americans to contribute to public service, civic duty, and shared sacrifice rather than waiting for benefits from the government."
+    },
+    {
+      "doc_id": "jfk_space",
+      "title": "Moon challenge",
+      "text": "President Kennedy challenged the United States to land a man on the Moon and return him safely to Earth before the decade was out."
+    },
+    {
+      "doc_id": "cold_war_context",
+      "title": "Cold War context",
+      "text": "Kennedy's early presidency was shaped by Cold War competition, alliance building, and strategic pressure with the Soviet Union."
+    },
+    {
+      "doc_id": "vision_debug",
+      "title": "Vision pipeline note",
+      "text": "FastVLM on Snapdragon SM8750 uses the LiteRT NPU path for the vision encoder while the small projection adapter can remain on the CPU path."
+    },
+    {
+      "doc_id": "thermal_policy",
+      "title": "Thermal management note",
+      "text": "GraphPilot-Edge keeps a small plan bank with cool, warm, hot, and low-memory states so the runtime can switch plans without unstable continuous replanning."
+    }
+  ]
+}

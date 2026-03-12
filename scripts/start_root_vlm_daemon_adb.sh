@@ -29,30 +29,16 @@ adb push "${HANDLER_LOCAL}" "${DEVICE_DIR}/vlm_daemon_handler.sh" >/dev/null
 adb push "${BINARY_LOCAL}" "${DEVICE_DIR}/litert_lm_advanced_main" >/dev/null
 adb shell "chmod 0755 '${DEVICE_DIR}/vlm_daemon_handler.sh' '${DEVICE_DIR}/litert_lm_advanced_main'"
 
-APP_BASE_APK_PATH="$(adb shell "pm path com.qidk.fastvlm 2>/dev/null | sed -n 's/^package://p' | head -n1" | tr -d '\r')"
-APP_NATIVE_LIB_DIR=""
-if [[ -n "${APP_BASE_APK_PATH}" ]]; then
-  APP_NATIVE_LIB_DIR="${APP_BASE_APK_PATH%/base.apk}/lib/arm64"
-  if ! adb shell "[ -d '${APP_NATIVE_LIB_DIR}' ]"; then
-    APP_NATIVE_LIB_DIR=""
-  fi
-fi
-
-if adb shell "toybox netstat -tlpn 2>/dev/null | grep -q ':21909 '"; then
+if adb shell "toybox netstat -tlpn 2>/dev/null | awk '\$4 == \"127.0.0.1:21909\" && \$6 == \"LISTEN\" { found=1 } END { exit found ? 0 : 1 }'"; then
   echo "Root daemon already listening on 127.0.0.1:21909"
   exit 0
 fi
 
-if [[ -n "${APP_NATIVE_LIB_DIR}" ]]; then
-  echo "Using app native lib directory for daemon runtime: ${APP_NATIVE_LIB_DIR}"
-  adb shell "nohup env VLM_NATIVE_LIB_DIR='${APP_NATIVE_LIB_DIR}' toybox nc -s 127.0.0.1 -p 21909 -L ${DEVICE_DIR}/vlm_daemon_handler.sh >${DEVICE_DIR}/vlm_daemon_stdout.log 2>${DEVICE_DIR}/vlm_daemon_stderr.log </dev/null &"
-else
-  echo "App native lib directory unavailable; daemon will use handler default VLM_NATIVE_LIB_DIR."
-  adb shell "nohup toybox nc -s 127.0.0.1 -p 21909 -L ${DEVICE_DIR}/vlm_daemon_handler.sh >${DEVICE_DIR}/vlm_daemon_stdout.log 2>${DEVICE_DIR}/vlm_daemon_stderr.log </dev/null &"
-fi
+echo "Starting root daemon with device dispatch libs at ${DEVICE_DIR}/dispatch_libs"
+adb shell "nohup toybox nc -s 127.0.0.1 -p 21909 -L ${DEVICE_DIR}/vlm_daemon_handler.sh >${DEVICE_DIR}/vlm_daemon_stdout.log 2>${DEVICE_DIR}/vlm_daemon_stderr.log </dev/null &"
 
 sleep 1
-if adb shell "toybox netstat -tlpn | grep -q ':21909'"; then
+if adb shell "toybox netstat -tlpn 2>/dev/null | awk '\$4 == \"127.0.0.1:21909\" && \$6 == \"LISTEN\" { found=1 } END { exit found ? 0 : 1 }'"; then
   echo "Root daemon is listening on 127.0.0.1:21909"
   exit 0
 fi

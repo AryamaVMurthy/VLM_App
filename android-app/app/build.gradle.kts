@@ -37,7 +37,7 @@ android {
     }
     debug {
       isDebuggable = true
-      buildConfigField("boolean", "ENABLE_DEV_ROOT_DAEMON_BRIDGE", "false")
+      buildConfigField("boolean", "ENABLE_DEV_ROOT_DAEMON_BRIDGE", "true")
     }
   }
 
@@ -83,10 +83,30 @@ val litertLmRoot = layout.projectDirectory.dir("../../third_party/litert-lm")
 val litertLmKotlinRoot = litertLmRoot.dir("kotlin/java/com/google/ai/edge/litertlm")
 val litertLmPrebuiltArm64Dir = litertLmRoot.dir("prebuilt/android_arm64")
 
-val litertLmJniHostLib =
-  litertLmRoot.file("bazel-bin/kotlin/java/com/google/ai/edge/litertlm/jni/liblitertlm_jni.so")
-val litertRuntimeHostLib =
-  litertLmRoot.file("bazel-bin/external/litert/litert/c/libLiteRt.so")
+fun resolveLiteRtBazelArtifact(relativePath: String): File {
+  val direct = litertLmRoot.file("bazel-bin/$relativePath").asFile
+  if (direct.exists()) {
+    return direct
+  }
+  val bazelOutRoot = litertLmRoot.dir("bazel-out").asFile
+  if (bazelOutRoot.exists()) {
+    val match =
+      project
+        .fileTree(bazelOutRoot) {
+          include("**/bin/$relativePath")
+        }
+        .files
+        .sortedBy { it.absolutePath }
+        .firstOrNull()
+    if (match != null) {
+      return match
+    }
+  }
+  return direct
+}
+
+val litertLmJniRelativePath = "kotlin/java/com/google/ai/edge/litertlm/jni/liblitertlm_jni.so"
+val litertRuntimeRelativePath = "external/litert/litert/c/libLiteRt.so"
 
 val prepareLiteRtLmSources by
   tasks.registering(Sync::class) {
@@ -106,27 +126,35 @@ val prepareLiteRtLmSources by
 val preparePhase1JniLibs by
   tasks.registering(Sync::class) {
     from(litertLmPrebuiltArm64Dir)
-    from(litertLmJniHostLib)
-    from(litertRuntimeHostLib)
+    from(
+      {
+        listOf(
+          resolveLiteRtBazelArtifact(litertLmJniRelativePath),
+          resolveLiteRtBazelArtifact(litertRuntimeRelativePath),
+        )
+      }
+    )
     into(layout.buildDirectory.dir("generated/phase1/jniLibs/arm64-v8a"))
     include("*.so")
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     doFirst {
       delete(layout.buildDirectory.dir("generated/phase1/jniLibs"))
+      val litertLmJniHostLib = resolveLiteRtBazelArtifact(litertLmJniRelativePath)
+      val litertRuntimeHostLib = resolveLiteRtBazelArtifact(litertRuntimeRelativePath)
       val missing = mutableListOf<String>()
       val litertPrebuilt = litertLmPrebuiltArm64Dir.asFile
       if (!litertPrebuilt.exists()) {
         missing +=
           "Missing LiteRT-LM prebuilt arm64 directory: ${litertPrebuilt.absolutePath}. Remediation: ensure third_party/litert-lm is complete."
       }
-      if (!litertLmJniHostLib.asFile.exists()) {
+      if (!litertLmJniHostLib.exists()) {
         missing +=
-          "Missing patched JNI library: ${litertLmJniHostLib.asFile.absolutePath}. Build it first: " +
+          "Missing patched JNI library: ${litertLmJniHostLib.absolutePath}. Build it first: " +
             "cd ../../third_party/litert-lm && bazel build --config=android_arm64 //kotlin/java/com/google/ai/edge/litertlm/jni:litertlm_jni"
       }
-      if (!litertRuntimeHostLib.asFile.exists()) {
+      if (!litertRuntimeHostLib.exists()) {
         missing +=
-          "Missing LiteRT runtime shared library: ${litertRuntimeHostLib.asFile.absolutePath}. Build it first: " +
+          "Missing LiteRT runtime shared library: ${litertRuntimeHostLib.absolutePath}. Build it first: " +
             "cd ../../third_party/litert-lm && bazel build --config=android_arm64 @litert//litert/c:litert_runtime_c_api_so"
       }
       if (missing.isNotEmpty()) {

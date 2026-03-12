@@ -22,6 +22,8 @@ internal object LiteRtLmJni {
     NativeLibraryLoader.load()
   }
 
+  fun ensureLoaded() = Unit
+
   /**
    * Creates a new LiteRT-LM engine.
    *
@@ -70,6 +72,30 @@ internal object LiteRtLmJni {
     decodeTokens: Int,
     cacheDir: String,
   ): Long
+
+  /**
+   * Runs the GraphPilot retrieval stage as an in-process LiteRT call.
+   *
+   * @param modelPath EmbeddingGemma TFLite model path.
+   * @param tokenizerPath SentencePiece tokenizer path.
+   * @param kbPath Retrieval KB JSON path with precomputed normalized embeddings.
+   * @param accelerator Backend name.
+   * @param runtimeLibraryDir Runtime library directory for GPU/NPU retrieval.
+   * @param dispatchLibraryDir Dispatch/compiler plugin directory for NPU retrieval.
+   * @param query Retrieval query text.
+   * @param topK Number of hits to return.
+   * @return A JSON payload matching GraphPilotRetrievalPayload.
+   */
+  external fun nativeGraphPilotRetrieve(
+    modelPath: String,
+    tokenizerPath: String,
+    kbPath: String,
+    accelerator: String,
+    runtimeLibraryDir: String,
+    dispatchLibraryDir: String,
+    query: String,
+    topK: Int,
+  ): String
 
   /**
    * Delete the LiteRT-LM engine.

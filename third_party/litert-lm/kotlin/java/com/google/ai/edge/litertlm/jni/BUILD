@@ -39,6 +39,7 @@ cc_binary(
         "//runtime/engine:engine_impl_selected",  # buildcleaner: keep
         "//runtime/engine:engine_interface",
         "//runtime/engine:engine_settings",
+        "//runtime/engine:graphpilot_retrieval_lib",
         "//runtime/engine:io_types",
         "//runtime/executor:executor_settings_base",
         "//runtime/proto:sampler_params_cc_proto",

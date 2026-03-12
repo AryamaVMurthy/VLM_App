@@ -36,6 +36,7 @@
 #include "runtime/conversation/io_types.h"
 #include "runtime/engine/engine.h"
 #include "runtime/engine/engine_factory.h"
+#include "runtime/engine/graphpilot_retrieval_lib.h"
 #include "runtime/engine/engine_settings.h"
 #include "runtime/engine/io_types.h"
 #include "runtime/executor/executor_settings_base.h"
@@ -78,6 +79,7 @@ using litert::lm::Preface;
 using litert::lm::Responses;
 using litert::lm::SessionConfig;
 using litert::lm::proto::SamplerParameters;
+using nlohmann::ordered_json;
 
 void MarkConversationBenchmarkDelta(Conversation* conversation,
                                     const std::string& mark_name) {
@@ -568,6 +570,127 @@ LITERTLM_JNIEXPORT jlong JNICALL JNI_METHOD(nativeCreateBenchmark)(
   }
 
   return reinterpret_cast<jlong>(engine->release());
+}
+
+LITERTLM_JNIEXPORT jstring JNICALL JNI_METHOD(nativeGraphPilotRetrieve)(
+    JNIEnv* env, jclass thiz, jstring model_path, jstring tokenizer_path,
+    jstring kb_path, jstring accelerator, jstring runtime_library_dir,
+    jstring dispatch_library_dir, jstring query, jint top_k) {
+  if (top_k <= 0) {
+    ThrowLiteRtLmJniException(env, "nativeGraphPilotRetrieve requires topK > 0");
+    return nullptr;
+  }
+
+  const char* model_path_chars = env->GetStringUTFChars(model_path, nullptr);
+  std::string model_path_str(model_path_chars);
+  env->ReleaseStringUTFChars(model_path, model_path_chars);
+
+  const char* tokenizer_path_chars =
+      env->GetStringUTFChars(tokenizer_path, nullptr);
+  std::string tokenizer_path_str(tokenizer_path_chars);
+  env->ReleaseStringUTFChars(tokenizer_path, tokenizer_path_chars);
+
+  const char* kb_path_chars = env->GetStringUTFChars(kb_path, nullptr);
+  std::string kb_path_str(kb_path_chars);
+  env->ReleaseStringUTFChars(kb_path, kb_path_chars);
+
+  const char* accelerator_chars = env->GetStringUTFChars(accelerator, nullptr);
+  std::string accelerator_str(accelerator_chars);
+  env->ReleaseStringUTFChars(accelerator, accelerator_chars);
+
+  const char* runtime_library_dir_chars =
+      env->GetStringUTFChars(runtime_library_dir, nullptr);
+  std::string runtime_library_dir_str(runtime_library_dir_chars);
+  env->ReleaseStringUTFChars(runtime_library_dir, runtime_library_dir_chars);
+
+  const char* dispatch_library_dir_chars =
+      env->GetStringUTFChars(dispatch_library_dir, nullptr);
+  std::string dispatch_library_dir_str(dispatch_library_dir_chars);
+  env->ReleaseStringUTFChars(dispatch_library_dir,
+                             dispatch_library_dir_chars);
+
+  const char* query_chars = env->GetStringUTFChars(query, nullptr);
+  std::string query_str(query_chars);
+  env->ReleaseStringUTFChars(query, query_chars);
+
+  const absl::Time total_start = absl::Now();
+  const absl::Time engine_start = absl::Now();
+  auto engine_or = litert::lm::GraphPilotRetrievalEngine::Create(
+      model_path_str, tokenizer_path_str, accelerator_str,
+      litert::lm::RetrievalEnvironmentConfig{
+          .runtime_library_dir = runtime_library_dir_str,
+          .dispatch_library_dir = dispatch_library_dir_str,
+      });
+  if (!engine_or.ok()) {
+    ThrowLiteRtLmJniException(
+        env, "GraphPilot retrieval engine init failed: " +
+                 engine_or.status().ToString());
+    return nullptr;
+  }
+  litert::lm::GraphPilotRetrievalEngine engine = std::move(*engine_or);
+  const double engine_ms =
+      absl::ToDoubleMilliseconds(absl::Now() - engine_start);
+
+  const absl::Time kb_load_start = absl::Now();
+  auto documents_or =
+      litert::lm::LoadRetrievalDocumentsFromJsonFile(kb_path_str);
+  if (!documents_or.ok()) {
+    ThrowLiteRtLmJniException(
+        env, "GraphPilot retrieval KB load failed: " +
+                 documents_or.status().ToString());
+    return nullptr;
+  }
+  std::vector<litert::lm::RetrievalDocument> documents =
+      std::move(*documents_or);
+  const double kb_load_ms =
+      absl::ToDoubleMilliseconds(absl::Now() - kb_load_start);
+
+  const absl::Time embed_start = absl::Now();
+  auto embedding_or = engine.EmbedText(query_str);
+  if (!embedding_or.ok()) {
+    ThrowLiteRtLmJniException(
+        env, "GraphPilot retrieval query embedding failed: " +
+                 embedding_or.status().ToString());
+    return nullptr;
+  }
+  std::vector<float> query_embedding = std::move(*embedding_or);
+  const double embed_ms =
+      absl::ToDoubleMilliseconds(absl::Now() - embed_start);
+
+  const absl::Time rank_start = absl::Now();
+  auto hits_or = litert::lm::RankDocumentsBySimilarity(
+      query_embedding, documents, static_cast<int>(top_k));
+  if (!hits_or.ok()) {
+    ThrowLiteRtLmJniException(
+        env, "GraphPilot retrieval ranking failed: " +
+                 hits_or.status().ToString());
+    return nullptr;
+  }
+  std::vector<litert::lm::RetrievalHit> hits = std::move(*hits_or);
+  const double rank_ms = absl::ToDoubleMilliseconds(absl::Now() - rank_start);
+
+  ordered_json payload = ordered_json::object();
+  payload["mode"] = "retrieve";
+  payload["accelerator"] = accelerator_str;
+  payload["sequence_length"] = engine.sequence_length();
+  payload["query"] = query_str;
+  payload["timings_ms"] = {
+      {"engine_create", engine_ms},
+      {"kb_load", kb_load_ms},
+      {"embed_query", embed_ms},
+      {"rank", rank_ms},
+      {"total", absl::ToDoubleMilliseconds(absl::Now() - total_start)},
+  };
+  payload["hits"] = ordered_json::array();
+  for (const auto& hit : hits) {
+    payload["hits"].push_back({
+        {"doc_id", hit.doc_id},
+        {"title", hit.title},
+        {"text", hit.text},
+        {"score", hit.score},
+    });
+  }
+  return NewStringStandardUTF(env, payload.dump());
 }
 
 LITERTLM_JNIEXPORT void JNICALL

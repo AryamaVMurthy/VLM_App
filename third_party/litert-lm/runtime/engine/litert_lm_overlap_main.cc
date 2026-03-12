@@ -53,6 +53,7 @@
 #include "runtime/components/model_resources.h"
 #include "runtime/components/preprocessor/stb_image_preprocessor.h"
 #include "runtime/components/tokenizer.h"
+#include "runtime/core/litert_env_options_util.h"
 #include "runtime/core/session_basic.h"
 #include "runtime/engine/engine_settings.h"
 #include "runtime/engine/io_types.h"
@@ -352,12 +353,9 @@ absl::StatusOr<Environment> CreateEnvironmentForSettings(
   const auto& main_executor_settings = engine_settings.GetMainExecutorSettings();
   if (main_executor_settings.GetBackend() == Backend::CPU ||
       main_executor_settings.GetBackend() == Backend::GPU) {
-    if (!main_executor_settings.GetAdvancedSettings() ||
-        main_executor_settings.GetAdvancedSettings()->configure_magic_numbers) {
-      MagicNumberConfigsHelper helper;
-      env_options =
-          helper.GetLiteRtEnvOptions(model_resources, main_executor_settings);
-    }
+    MagicNumberConfigsHelper helper;
+    env_options = BuildCpuGpuLiteRtEnvironmentOptions(
+        model_resources, main_executor_settings, helper);
   } else {
 #if defined(LITERT_DISABLE_NPU)
     return absl::InvalidArgumentError(

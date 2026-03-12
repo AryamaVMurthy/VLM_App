@@ -1,6 +1,7 @@
 package com.qidk.fastvlm.core.speech
 
 import android.content.Context
+import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -20,6 +21,9 @@ class WhisperModelManager(
   private val context: Context,
   private val client: OkHttpClient,
 ) {
+  companion object {
+    private const val TAG = "WhisperModelManager"
+  }
 
   private val modelRootDir: File by lazy { File(context.filesDir, "speech_models") }
 
@@ -42,11 +46,51 @@ class WhisperModelManager(
       return@withContext WhisperModelActivationResult(modelPath = artifactFile.absolutePath)
     }
 
-    downloadAndVerify(config, artifactFile)
+    if (!provisionFromLocalMirror(config, artifactFile)) {
+      downloadAndVerify(config, artifactFile)
+    }
     WhisperModelActivationResult(modelPath = artifactFile.absolutePath)
   }
 
+  private fun provisionFromLocalMirror(config: WhisperModelConfig, destination: File): Boolean {
+    val mirrorPath = config.local_mirror_path?.trim().orEmpty()
+    if (mirrorPath.isEmpty()) {
+      return false
+    }
+    val source = File(mirrorPath)
+    if (!source.exists()) {
+      throw WhisperProvisionException(
+        "Configured Whisper local mirror '${source.absolutePath}' is missing for artifact '${config.artifact}'. Remediation: stage the exact model artifact to the declared mirror path or update the config.",
+      )
+    }
+    val checksum = sha256(source)
+    if (!checksum.equals(config.sha256, ignoreCase = true)) {
+      throw WhisperProvisionException(
+        "Checksum mismatch for Whisper local mirror '${source.absolutePath}'. expected='${config.sha256}', actual='${checksum}'. Remediation: replace the mirror with the pinned artifact.",
+      )
+    }
+    if (source.length() != config.size_bytes) {
+      throw WhisperProvisionException(
+        "Size mismatch for Whisper local mirror '${source.absolutePath}'. expected=${config.size_bytes}, actual=${source.length()}. Remediation: replace the mirror with the pinned artifact.",
+      )
+    }
+    if (destination.exists() && !destination.delete()) {
+      throw WhisperProvisionException(
+        "Failed to replace existing Whisper destination '${destination.absolutePath}' while provisioning from local mirror.",
+      )
+    }
+    source.copyTo(destination, overwrite = true)
+    Log.i(TAG, "Whisper model provisioned from local mirror: ${source.absolutePath} -> ${destination.absolutePath}")
+    return true
+  }
+
   private fun downloadAndVerify(config: WhisperModelConfig, destination: File) {
+    val downloadUrl = config.download_url?.trim().orEmpty()
+    if (downloadUrl.isEmpty()) {
+      throw WhisperProvisionException(
+        "No download_url configured for Whisper artifact '${config.artifact}' and local mirror provisioning was unavailable. Remediation: stage the pinned artifact locally or add a pinned download URL.",
+      )
+    }
     val tempFile = File(destination.parentFile, "${destination.name}.download")
     if (tempFile.exists() && !tempFile.delete()) {
       throw WhisperProvisionException(
@@ -54,12 +98,12 @@ class WhisperModelManager(
       )
     }
 
-    val request = Request.Builder().url(config.download_url).get().build()
+    val request = Request.Builder().url(downloadUrl).get().build()
     try {
       client.newCall(request).execute().use { response ->
         if (!response.isSuccessful) {
           throw WhisperProvisionException(
-            "Whisper model download failed with HTTP ${response.code}. URL='${config.download_url}'. Remediation: verify network access and URL revision pin.",
+            "Whisper model download failed with HTTP ${response.code}. URL='${downloadUrl}'. Remediation: verify network access and URL revision pin.",
           )
         }
 

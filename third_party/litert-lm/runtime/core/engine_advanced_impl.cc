@@ -33,6 +33,7 @@
 #include "litert/cc/litert_macros.h"  // from @litert
 #include "runtime/components/model_resources.h"
 #include "runtime/components/tokenizer.h"
+#include "runtime/core/litert_env_options_util.h"
 #include "runtime/core/session_factory.h"
 #include "runtime/engine/engine.h"
 #include "runtime/engine/engine_factory.h"
@@ -87,18 +88,18 @@ absl::StatusOr<Environment&> GetEnvironment(EngineSettings& engine_settings,
 
         if ((main_executor_settings.GetBackend() == Backend::CPU) ||
             (main_executor_settings.GetBackend() == Backend::GPU)) {
-          if (!main_executor_settings
-                   .GetAdvancedSettings() ||  // Default is true.
-              main_executor_settings.GetAdvancedSettings()
-                  ->configure_magic_numbers) {
-            env_options = helper->GetLiteRtEnvOptions(model_resources,
-                                                      main_executor_settings);
-          }
+          env_options = BuildCpuGpuLiteRtEnvironmentOptions(
+              model_resources, main_executor_settings, *helper);
         } else {
 #if defined(LITERT_DISABLE_NPU)
           return absl::InvalidArgumentError(
               "Only CPU and GPU backends are supported.");
 #else
+          if (!main_executor_settings.GetLitertDispatchLibDir().empty()) {
+            env_options.push_back(::litert::Environment::Option{
+                ::litert::Environment::OptionTag::RuntimeLibraryDir,
+                main_executor_settings.GetLitertDispatchLibDir()});
+          }
           if (!main_executor_settings.GetLitertDispatchLibDir().empty()) {
             // JIT-compiled NPU models need both the dispatch runtime and the
             // compiler plugin in the same search root.

@@ -86,10 +86,43 @@ ENGINE_IMPL_COMMON_DEPS = [
 })
 
 cc_library(
+    name = "litert_env_options_util",
+    srcs = ["litert_env_options_util.cc"],
+    hdrs = ["litert_env_options_util.h"],
+    deps = [
+        "@litert//litert/cc:litert_environment",
+        "//runtime/components:model_resources",
+        "//runtime/executor:llm_executor_settings",
+        "//runtime/executor:magic_number_configs_helper",
+    ],
+)
+
+cc_test(
+    name = "litert_env_options_util_test",
+    srcs = ["litert_env_options_util_test.cc"],
+    data = ["//runtime/testdata"],
+    deps = [
+        ":litert_env_options_util",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:string_view",
+        "@litert//litert/cc:litert_model",
+        "//runtime/components:model_resources",
+        "//runtime/components:tokenizer",
+        "//runtime/executor:llm_executor_settings",
+        "//runtime/executor:magic_number_configs_helper",
+        "//runtime/util:litert_status_util",
+        "//runtime/util:scoped_file",
+        "//runtime/util:test_utils",
+    ],
+)
+
+cc_library(
     name = "engine_impl",
     srcs = ["engine_impl.cc"],
     visibility = [":engine_impl_users"],
     deps = ENGINE_IMPL_COMMON_DEPS + [
+        ":litert_env_options_util",
         "//runtime/components:default_static_gpu_samplers",
         "//runtime/executor:default_static_gpu_accelerator",
     ] + select({
@@ -101,7 +134,7 @@ cc_library(
 cc_library(
     name = "engine_impl_cpu_only",
     srcs = ["engine_impl.cc"],
-    deps = ENGINE_IMPL_COMMON_DEPS,
+    deps = ENGINE_IMPL_COMMON_DEPS + [":litert_env_options_util"],
     alwayslink = 1,
 )
 

@@ -1,0 +1,124 @@
+{
+  "project": "GraphPilot-Edge",
+  "schema_version": 1,
+  "stages": [
+    {
+      "stage_id": "asr.primary",
+      "role": "asr",
+      "default_variant": "whisper_cpp_tiny_en_q8_0",
+      "stage_contract": {
+        "inputs": [
+          "pcm16_mono_16khz"
+        ],
+        "outputs": [
+          "transcript_text",
+          "partial_transcript_text"
+        ]
+      },
+      "source_paths": [
+        "android-app/app/src/main/java/com/qidk/fastvlm/core/speech/WhisperSttEngine.kt"
+      ]
+    },
+    {
+      "stage_id": "planner.primary",
+      "role": "planner",
+      "default_variant": "gemma3_1b_it",
+      "macro_regions": [
+        "prefill",
+        "decode"
+      ],
+      "stage_contract": {
+        "inputs": [
+          "transcript_text",
+          "planner_context"
+        ],
+        "outputs": [
+          "planner_contract_json",
+          "planner_summary_text"
+        ]
+      },
+      "source_paths": []
+    },
+    {
+      "stage_id": "vlm.fastvlm.primary",
+      "role": "vlm",
+      "default_variant": "fastvlm_0_5b_litert_sm8750",
+      "macro_regions": [
+        "vision_encoder",
+        "vision_adapter_projection",
+        "pruning_seam",
+        "prefill",
+        "decode",
+        "aux_mask"
+      ],
+      "stage_contract": {
+        "inputs": [
+          "image_rgb",
+          "question_text"
+        ],
+        "outputs": [
+          "caption_or_answer_text",
+          "visual_token_stats"
+        ]
+      },
+      "source_paths": [
+        "scripts/run_fastvlm_litert_npu_adb.sh",
+        "scripts/run_fastvlm_litert_overlap_adb.sh"
+      ]
+    },
+    {
+      "stage_id": "retrieval.embedder.primary",
+      "role": "retrieval",
+      "default_variant": "embeddinggemma_300m",
+      "stage_contract": {
+        "inputs": [
+          "query_text",
+          "kb_manifest"
+        ],
+        "outputs": [
+          "retrieved_chunks",
+          "retrieval_scores"
+        ]
+      },
+      "source_paths": []
+    },
+    {
+      "stage_id": "responder.primary",
+      "role": "responder",
+      "default_variant": "gemma3_1b_it",
+      "macro_regions": [
+        "prefill",
+        "decode"
+      ],
+      "stage_contract": {
+        "inputs": [
+          "planner_contract_json",
+          "vlm_text",
+          "retrieved_chunks"
+        ],
+        "outputs": [
+          "response_text",
+          "response_token_stream"
+        ]
+      },
+      "source_paths": []
+    },
+    {
+      "stage_id": "tts.primary",
+      "role": "tts",
+      "default_variant": "android_text_to_speech",
+      "stage_contract": {
+        "inputs": [
+          "response_text",
+          "response_token_stream"
+        ],
+        "outputs": [
+          "audio_chunks"
+        ]
+      },
+      "source_paths": [
+        "android-app/app/src/main/java/com/qidk/fastvlm/core/speech/StreamingTtsCoordinator.kt"
+      ]
+    }
+  ]
+}

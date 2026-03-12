@@ -1,0 +1,110 @@
+{
+  "project": "GraphPilot-Edge",
+  "schema_version": 1,
+  "workflows": [
+    {
+      "workflow_id": "workflow_a_voice_only",
+      "description": "ASR -> planner -> responder -> TTS",
+      "nodes": [
+        "asr.primary",
+        "planner.primary",
+        "responder.primary",
+        "tts.primary"
+      ],
+      "edges": [
+        {
+          "from": "asr.primary",
+          "to": "planner.primary",
+          "stream_mode": "chunk"
+        },
+        {
+          "from": "planner.primary",
+          "to": "responder.primary",
+          "stream_mode": "full"
+        },
+        {
+          "from": "responder.primary",
+          "to": "tts.primary",
+          "stream_mode": "token"
+        }
+      ]
+    },
+    {
+      "workflow_id": "workflow_b_voice_vision",
+      "description": "ASR -> planner -> VLM -> responder -> TTS",
+      "nodes": [
+        "asr.primary",
+        "planner.primary",
+        "vlm.fastvlm.primary",
+        "responder.primary",
+        "tts.primary"
+      ],
+      "edges": [
+        {
+          "from": "asr.primary",
+          "to": "planner.primary",
+          "stream_mode": "chunk"
+        },
+        {
+          "from": "planner.primary",
+          "to": "vlm.fastvlm.primary",
+          "stream_mode": "full"
+        },
+        {
+          "from": "vlm.fastvlm.primary",
+          "to": "responder.primary",
+          "stream_mode": "full"
+        },
+        {
+          "from": "responder.primary",
+          "to": "tts.primary",
+          "stream_mode": "token"
+        }
+      ]
+    },
+    {
+      "workflow_id": "workflow_c_voice_vision_retrieval",
+      "description": "ASR -> planner -> (VLM || retrieval) -> responder -> TTS",
+      "nodes": [
+        "asr.primary",
+        "planner.primary",
+        "vlm.fastvlm.primary",
+        "retrieval.embedder.primary",
+        "responder.primary",
+        "tts.primary"
+      ],
+      "edges": [
+        {
+          "from": "asr.primary",
+          "to": "planner.primary",
+          "stream_mode": "chunk"
+        },
+        {
+          "from": "planner.primary",
+          "to": "vlm.fastvlm.primary",
+          "stream_mode": "full"
+        },
+        {
+          "from": "planner.primary",
+          "to": "retrieval.embedder.primary",
+          "stream_mode": "full"
+        },
+        {
+          "from": "vlm.fastvlm.primary",
+          "to": "responder.primary",
+          "stream_mode": "full"
+        },
+        {
+          "from": "retrieval.embedder.primary",
+          "to": "responder.primary",
+          "stream_mode": "full"
+        },
+        {
+          "from": "responder.primary",
+          "to": "tts.primary",
+          "stream_mode": "token"
+        }
+      ]
+    }
+  ]
+}

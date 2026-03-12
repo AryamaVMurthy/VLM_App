@@ -1,0 +1,22 @@
+{
+  "project": "GraphPilot-Edge",
+  "schema_version": 1,
+  "plan_bank_states": [
+    {
+      "state_id": "cool",
+      "description": "Default steady-state plan selection when thermal and memory pressure are low."
+    },
+    {
+      "state_id": "warm",
+      "description": "Reduced accelerator pressure and slightly more conservative concurrency."
+    },
+    {
+      "state_id": "hot",
+      "description": "Thermally constrained operation with reduced overlap aggressiveness."
+    },
+    {
+      "state_id": "lowmem",
+      "description": "Memory-constrained operation with explicit degradation ladder activation."
+    }
+  ]
+}

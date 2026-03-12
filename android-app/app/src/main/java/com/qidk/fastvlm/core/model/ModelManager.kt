@@ -60,7 +60,9 @@ class ModelManager(
       return@withContext activate(config, artifactFile)
     }
 
-    downloadAndVerify(config, artifactFile)
+    if (!provisionFromLocalMirror(config, artifactFile)) {
+      downloadAndVerify(config, artifactFile)
+    }
     activate(config, artifactFile)
   }
 
@@ -84,7 +86,45 @@ class ModelManager(
     )
   }
 
+  private fun provisionFromLocalMirror(config: FastVlmModelConfig, destination: File): Boolean {
+    val mirrorPath = config.local_mirror_path?.trim().orEmpty()
+    if (mirrorPath.isEmpty()) {
+      return false
+    }
+    val source = File(mirrorPath)
+    if (!source.exists()) {
+      throw ModelProvisionException(
+        "Configured local mirror '${source.absolutePath}' is missing for artifact '${config.artifact}'. Remediation: stage the exact model artifact to the declared mirror path or update the config.",
+      )
+    }
+    val checksum = sha256(source)
+    if (!checksum.equals(config.sha256, ignoreCase = true)) {
+      throw ModelProvisionException(
+        "Checksum mismatch for local mirror '${source.absolutePath}'. expected='${config.sha256}', actual='${checksum}'. Remediation: replace the mirror with the pinned artifact.",
+      )
+    }
+    if (source.length() != config.size_bytes) {
+      throw ModelProvisionException(
+        "Size mismatch for local mirror '${source.absolutePath}'. expected=${config.size_bytes}, actual=${source.length()}. Remediation: replace the mirror with the pinned artifact.",
+      )
+    }
+    if (destination.exists() && !destination.delete()) {
+      throw ModelProvisionException(
+        "Failed to replace existing destination '${destination.absolutePath}' while provisioning from local mirror.",
+      )
+    }
+    source.copyTo(destination, overwrite = true)
+    Log.i(TAG, "Model provisioned from local mirror: ${source.absolutePath} -> ${destination.absolutePath}")
+    return true
+  }
+
   private fun downloadAndVerify(config: FastVlmModelConfig, destination: File) {
+    val downloadUrl = config.download_url?.trim().orEmpty()
+    if (downloadUrl.isEmpty()) {
+      throw ModelProvisionException(
+        "No download_url configured for artifact '${config.artifact}' and local mirror provisioning was unavailable. Remediation: stage the pinned artifact locally or add a pinned download URL.",
+      )
+    }
     val tempFile = File(destination.parentFile, "${destination.name}.download")
     if (tempFile.exists() && !tempFile.delete()) {
       throw ModelProvisionException(
@@ -92,12 +132,12 @@ class ModelManager(
       )
     }
 
-    val request = Request.Builder().url(config.download_url).get().build()
+    val request = Request.Builder().url(downloadUrl).get().build()
     try {
       client.newCall(request).execute().use { response ->
         if (!response.isSuccessful) {
           throw ModelProvisionException(
-            "Model download failed with HTTP ${response.code}. URL='${config.download_url}'. Remediation: verify network access and URL revision pin.",
+            "Model download failed with HTTP ${response.code}. URL='${downloadUrl}'. Remediation: verify network access and URL revision pin.",
           )
         }
 
