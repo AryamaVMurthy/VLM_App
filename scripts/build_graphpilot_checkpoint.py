@@ -141,7 +141,20 @@ def build_checkpoint_manifest(args: argparse.Namespace) -> dict[str, Any]:
         resolved = explicit or latest_analysis_summary(DEFAULT_ANALYSIS_ROOT, prefix)
         canonical_paths[name] = resolved.resolve() if resolved is not None else None
 
-    missing = [name for name, path in canonical_paths.items() if name not in {"sustained_summary", "calibration_summary", "tuning_summary", "characterization_summary", "memory_admission_summary"} and path is None]
+    missing = [
+        name
+        for name, path in canonical_paths.items()
+        if name
+        not in {
+            "sustained_summary",
+            "calibration_summary",
+            "tuning_summary",
+            "characterization_summary",
+            "memory_admission_summary",
+            "artifact_pack_summary",
+        }
+        and path is None
+    ]
     if missing:
         raise ValueError(f"Missing required canonical paths: {missing}")
     for name, path in canonical_paths.items():
