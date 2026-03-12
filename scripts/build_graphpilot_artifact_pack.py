@@ -16,11 +16,26 @@ ARTIFACT_ROOT = ROOT_DIR / "artifacts" / "graphpilot_edge"
 DEFAULT_BACKEND_MATRIX = ARTIFACT_ROOT / "registries" / "backend_feasibility_matrix.json"
 DEFAULT_PROFILER_REGISTRY = ARTIFACT_ROOT / "registries" / "profiler_registry.json"
 DEFAULT_CANDIDATE_PLANS = ARTIFACT_ROOT / "registries" / "candidate_plan_registry.json"
+DEFAULT_BASELINE_REGISTRY = ARTIFACT_ROOT / "registries" / "baseline_policy_registry.json"
+DEFAULT_WORKLOAD_REGISTRY = ARTIFACT_ROOT / "registries" / "workload_universe_registry.json"
 DEFAULT_EXPERIMENT_REGISTRY = ARTIFACT_ROOT / "registries" / "experiment_registry.json"
 DEFAULT_PLOT_REGISTRY = ARTIFACT_ROOT / "registries" / "plot_registry.json"
 DEFAULT_STATE_LEDGER = ARTIFACT_ROOT / "state" / "state_ledger.json"
 DEFAULT_OUTPUT_ROOT = ARTIFACT_ROOT / "reports"
 DEFAULT_ANALYSIS_ROOT = ARTIFACT_ROOT / "analysis"
+DEFAULT_REQUIRED_BASELINES = (
+    "cpu_only",
+    "gpu_only",
+    "npu_only",
+    "current_deployed_plan",
+    "stage_greedy",
+    "static_best_map",
+    "no_pipeline",
+    "no_fallback_aware",
+    "no_memory_kv",
+    "no_knob_tuning",
+    "no_thermal_adaptation",
+)
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -60,6 +75,49 @@ def latest_analysis_summary(root: Path, prefix: str) -> Path | None:
     if not candidates:
         return None
     return candidates[-1]
+
+
+def load_optional_json(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    return load_json(path)
+
+
+def resolve_checkpoint_inputs(
+    *,
+    manifest_path: Path,
+    explicit_overrides: dict[str, Path | None],
+) -> tuple[dict[str, Any], dict[str, Path]]:
+    conflicting = sorted(name for name, path in explicit_overrides.items() if path is not None)
+    if conflicting:
+        raise ValueError(
+            "checkpoint-manifest cannot be mixed with explicit artifact overrides. "
+            f"Conflicting arguments: {conflicting}"
+        )
+    manifest = load_json(manifest_path)
+    canonical = manifest.get("canonical_evidence_paths")
+    if not isinstance(canonical, dict):
+        raise ValueError(
+            f"Checkpoint manifest '{manifest_path}' is missing canonical_evidence_paths."
+        )
+    required = (
+        "backend_matrix",
+        "profiler_registry",
+        "candidate_plans",
+        "baseline_registry",
+        "workload_registry",
+        "experiment_registry",
+        "plot_registry",
+        "state_ledger",
+        "experiment_summary",
+    )
+    missing = [name for name in required if not canonical.get(name)]
+    if missing:
+        raise ValueError(
+            f"Checkpoint manifest '{manifest_path}' is missing required canonical paths {missing}."
+        )
+    resolved = {name: Path(value) for name, value in canonical.items() if value is not None}
+    return manifest, resolved
 
 
 def write_simple_bar_svg(path: Path, title: str, rows: list[tuple[str, float]], x_label: str) -> None:
@@ -478,15 +536,22 @@ def write_report(
     stream_summary: dict[str, Any] | None,
     memory_admission_summary: dict[str, Any] | None,
     characterization_summary: dict[str, Any] | None,
+    checkpoint_manifest: dict[str, Any] | None = None,
 ) -> None:
     lines = [
         "# GraphPilot Artifact Pack",
         "",
         f"- Generated at: `{datetime.now(timezone.utc).isoformat()}`",
-        "",
-        "## Actual workflows",
-        "",
     ]
+    if checkpoint_manifest:
+        lines.extend(
+            [
+                f"- Checkpoint manifest: `{checkpoint_manifest.get('checkpoint_manifest_path')}`",
+                f"- Truth-source PDF: `{checkpoint_manifest.get('truth_source_pdf')}`",
+                f"- Open beads at checkpoint: {len(checkpoint_manifest.get('open_beads', []))}",
+            ]
+        )
+    lines.extend(["", "## Actual workflows", ""])
     for workflow_id, workflow in sorted(summary.get("actual_workflows", {}).items()):
         lines.append(
             f"- `{workflow_id}` via `{workflow['variant']}` state=`{workflow.get('state_id')}` "
@@ -629,6 +694,7 @@ def write_paper_draft(
     stream_summary: dict[str, Any] | None,
     memory_admission_summary: dict[str, Any] | None,
     characterization_summary: dict[str, Any] | None,
+    checkpoint_manifest: dict[str, Any] | None = None,
 ) -> None:
     actual = summary.get("actual_workflows", {})
     workflow_a = actual.get("workflow_a_voice_only", {})
@@ -672,53 +738,68 @@ def write_paper_draft(
         f"and reaches first audio at {workflow_a.get('tts_first_audio_ms')} ms. "
         "The artifact pack includes backend feasibility evidence, calibrated candidate-plan rankings, repeated-trial statistics, "
         "continuous-stream simulation, and 20-minute sustained-load drift plots.",
-        "",
-        "## 1. Problem and Objective",
-        "",
-        "GraphPilot-Edge optimizes assistant plans over latency, time to first speech, queue delay, deadline miss rate, energy proxy, memory, copy volume, and quality loss:",
-        "",
-        "```text",
-        "J(Pi) = alpha * P95(T_e2e) + beta * P95(T_TFS) + gamma * E_bar + delta * M_peak + eta * B_copy + zeta * Q_loss + xi * P95(T_queue) + psi * R_miss",
-        "```",
-        "",
-        "Hard constraints are:",
-        "",
-        "```text",
-        "M_peak <= M_budget",
-        "Q_loss <= epsilon",
-        "every assigned stage or macro-region must be support-safe",
-        "```",
-        "",
-        "## 2. Offline Brain",
-        "",
-        "The Offline Brain maintains the backend feasibility matrix, profiler registry, candidate-plan registry, and experiment registry. "
-        "It profiles feasible stage/backend pairs, separates responder prefill from decode, and scores plans with explicit formulas rather than heuristics.",
-        "",
-        "Execution cost model:",
-        "",
-        "```text",
-        "T_i(v,b,x,theta,q) = T_hat_i(v,b,x) * rho_b(theta) * kappa_b(q) + 1_cold * C_compile_i(v,b)",
-        "```",
-        "",
-        "Transfer cost model:",
-        "",
-        "```text",
-        "C_{i->j}(S,b_i,b_j) = 0 | C_map(S) | tau0_{b_i,b_j} + S / BW_{b_i,b_j} + tau_layout",
-        "```",
-        "",
-        "Contention model:",
-        "",
-        "```text",
-        "kappa_b(q) = 1 + sum_{b'} lambda_{b,b'} * u_{b'}",
-        "```",
-        "",
-        "Responder split and KV migration model:",
-        "",
-        "```text",
-        "T_resp = T_prefill + T_switch + N_out * t_decode",
-        "T_switch = 0 if b_prefill == b_decode else tau0 + M_KV / BW_{b_prefill,b_decode}",
-        "M_KV = 2 * L * H_kv * D_head * T * B_dtype",
-        "```",
+    ]
+    if checkpoint_manifest:
+        lines.extend(
+            [
+                "",
+                f"Checkpoint anchor: `{checkpoint_manifest.get('checkpoint_manifest_path')}`",
+                f"Truth source: `{checkpoint_manifest.get('truth_source_pdf')}`",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "## 1. Problem and Objective",
+            "",
+            "GraphPilot-Edge optimizes assistant plans over latency, time to first speech, queue delay, deadline miss rate, energy proxy, memory, copy volume, and quality loss:",
+            "",
+            "```text",
+            "J(Pi) = alpha * P95(T_e2e) + beta * P95(T_TFS) + gamma * E_bar + delta * M_peak + eta * B_copy + zeta * Q_loss + xi * P95(T_queue) + psi * R_miss",
+            "```",
+            "",
+            "Hard constraints are:",
+            "",
+            "```text",
+            "M_peak <= M_budget",
+            "Q_loss <= epsilon",
+            "every assigned stage or macro-region must be support-safe",
+            "```",
+            "",
+            "## 2. Offline Brain",
+            "",
+            "The Offline Brain maintains the backend feasibility matrix, profiler registry, candidate-plan registry, and experiment registry. "
+            "It profiles feasible stage/backend pairs, separates responder prefill from decode, and scores plans with explicit formulas rather than heuristics.",
+            "",
+            "Execution cost model:",
+            "",
+            "```text",
+            "T_i(v,b,x,theta,q) = T_hat_i(v,b,x) * rho_b(theta) * kappa_b(q) + 1_cold * C_compile_i(v,b)",
+            "```",
+            "",
+            "Transfer cost model:",
+            "",
+            "```text",
+            "C_{i->j}(S,b_i,b_j) = 0 | C_map(S) | tau0_{b_i,b_j} + S / BW_{b_i,b_j} + tau_layout",
+            "```",
+            "",
+            "Contention model:",
+            "",
+            "```text",
+            "kappa_b(q) = 1 + sum_{b'} lambda_{b,b'} * u_{b'}",
+            "```",
+            "",
+            "Responder split and KV migration model:",
+            "",
+            "```text",
+            "T_resp = T_prefill + T_switch + N_out * t_decode",
+            "T_switch = 0 if b_prefill == b_decode else tau0 + M_KV / BW_{b_prefill,b_decode}",
+            "M_KV = 2 * L * H_kv * D_head * T * B_dtype",
+            "```",
+        ]
+    )
+    lines.extend(
+        [
         "",
         "Stage-level placement is enumerated exhaustively, and opened heavy stages use macro-region beam search with dominance pruning. "
         "The discrete-event simulator estimates TTFT, TTFS, makespan, peak memory, copy bytes, energy proxy, queue delay, and deadline miss rate before top plans are executed on device.",
@@ -743,6 +824,7 @@ def write_paper_draft(
         "",
         "The current prototype evidence shows:",
     ]
+    )
     for stage in backend_matrix.get("stages", []):
         backends = stage.get("backends", {})
         lines.append(
@@ -896,13 +978,22 @@ def write_paper_draft(
             "- `report.md` for the concise artifact summary",
             "- `paper_tables.md` for paper-ready tables",
             "- `final_audit_report.md` for pass/fail scope",
-            "- SVG figures for feasibility, workflow latency, delta, and sustained drift",
+        "- SVG figures for feasibility, workflow latency, delta, and sustained drift",
         ]
     )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def write_final_audit(path: Path, backend_matrix: dict[str, Any], summary: dict[str, Any], repeat_stats: dict[str, Any], sustained_summary: dict[str, Any] | None) -> None:
+def write_final_audit(
+    path: Path,
+    backend_matrix: dict[str, Any],
+    summary: dict[str, Any],
+    repeat_stats: dict[str, Any],
+    sustained_summary: dict[str, Any] | None,
+    *,
+    baseline_registry: dict[str, Any] | None = None,
+    checkpoint_manifest: dict[str, Any] | None = None,
+) -> None:
     workflow_ids = set(summary.get("actual_workflows", {}).keys())
     has_all_workflows = {
         "workflow_a_voice_only",
@@ -910,8 +1001,12 @@ def write_final_audit(path: Path, backend_matrix: dict[str, Any], summary: dict[
         "workflow_c_voice_vision_retrieval",
     }.issubset(workflow_ids)
     blocked_workflows = summary.get("blocked_workflows", [])
+    open_beads = (checkpoint_manifest or {}).get("open_beads", [])
+    required_baselines = tuple((checkpoint_manifest or {}).get("required_baseline_ids", DEFAULT_REQUIRED_BASELINES))
+    available_baselines = set((baseline_registry or {}).get("baseline_ids", ()))
+    missing_baselines = [baseline_id for baseline_id in required_baselines if baseline_id not in available_baselines]
     runtime_verdict = "PASS" if has_all_workflows and not blocked_workflows else "PARTIAL"
-    baseline_verdict = "PASS" if has_all_workflows and summary.get("comparisons") else "PARTIAL"
+    baseline_verdict = "PASS" if has_all_workflows and summary.get("comparisons") and not missing_baselines else "PARTIAL"
     has_repeat_trials = all(
         workflow_id in repeat_stats and (repeat_stats[workflow_id].get("warm_latency_ms") or {}).get("count", 0) >= 3
         for workflow_id in ("workflow_a_voice_only", "workflow_b_voice_vision", "workflow_c_voice_vision_retrieval")
@@ -925,7 +1020,7 @@ def write_final_audit(path: Path, backend_matrix: dict[str, Any], summary: dict[
         "- Repository scaffolding and state registries: PASS",
         "- Backend feasibility matrix with explicit infeasibility recording: PASS",
         "- Profiler database with measured workflow/stage coverage: PASS",
-        "- Planner/simulator/scheduler/memory/KV components implemented and unit-tested: PASS",
+        f"- Planner/simulator/scheduler/memory/KV components implemented and unit-tested: {'PASS' if not open_beads else 'PARTIAL'}",
         f"- End-to-end runtime for mandatory DAGs: {runtime_verdict}",
         f"- Baselines and candidate-plan evaluation: {baseline_verdict}",
         f"- Sustained-load thermal drift and long-run stability: {'PASS' if has_sustained else 'PARTIAL'}",
@@ -934,7 +1029,7 @@ def write_final_audit(path: Path, backend_matrix: dict[str, Any], summary: dict[
         "## Broad-claim verdict",
         "",
     ]
-    if has_all_workflows and not blocked_workflows:
+    if has_all_workflows and not blocked_workflows and not open_beads and not missing_baselines:
         lines.extend(
             [
                 "- Broad three-workflow GraphPilot-Edge claim survives for the current prototype scope.",
@@ -951,6 +1046,28 @@ def write_final_audit(path: Path, backend_matrix: dict[str, Any], summary: dict[
     lines.extend(
         [
         "",
+        "## Open Beads",
+        "",
+    ])
+    if open_beads:
+        for bead in open_beads:
+            lines.append(f"- `{bead['id']}`: {bead.get('title')}")
+    else:
+        lines.append("- No open beads recorded in the checkpoint manifest.")
+    lines.extend(
+        [
+        "",
+        "## Missing required baseline IDs",
+        "",
+    ])
+    if missing_baselines:
+        for baseline_id in missing_baselines:
+            lines.append(f"- `{baseline_id}`")
+    else:
+        lines.append("- No required baseline IDs are missing.")
+    lines.extend(
+        [
+        "",
         "## Current hard blockers",
         "",
     ])
@@ -958,12 +1075,16 @@ def write_final_audit(path: Path, backend_matrix: dict[str, Any], summary: dict[
         lines.append(f"- `{blocked['workflow_id']}` blocked: {blocked['detail']}")
     if not blocked_workflows:
         lines.append("- No blocked workflows recorded.")
+    if open_beads:
+        lines.append("- Expanded-scope work remains open; see Open Beads above.")
+    if missing_baselines:
+        lines.append("- Baseline suite is incomplete; see Missing required baseline IDs above.")
     lines.extend(["", "## Required next step", ""])
-    if blocked_workflows:
+    if blocked_workflows or open_beads or missing_baselines:
         lines.extend(
             [
-                "- Clear the remaining blocked workflows and rerun scripts/run_graphpilot_experiments.py.",
-                "- Regenerate the artifact pack after fresh experiment evidence lands.",
+                "- Close the remaining open beads and required baseline gaps before claiming expanded-scope completion.",
+                "- Regenerate the artifact pack from a fresh checkpoint manifest after fresh calibrated evidence lands.",
             ]
         )
     else:
@@ -1065,43 +1186,88 @@ def update_plot_registry(registry: dict[str, Any], pack_dir: Path) -> None:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--checkpoint-manifest", type=Path, default=None)
     parser.add_argument("--backend-matrix", type=Path, default=DEFAULT_BACKEND_MATRIX)
     parser.add_argument("--profiler-registry", type=Path, default=DEFAULT_PROFILER_REGISTRY)
     parser.add_argument("--candidate-plans", type=Path, default=DEFAULT_CANDIDATE_PLANS)
+    parser.add_argument("--baseline-registry", type=Path, default=DEFAULT_BASELINE_REGISTRY)
+    parser.add_argument("--workload-registry", type=Path, default=DEFAULT_WORKLOAD_REGISTRY)
     parser.add_argument("--experiment-registry", type=Path, default=DEFAULT_EXPERIMENT_REGISTRY)
     parser.add_argument("--plot-registry", type=Path, default=DEFAULT_PLOT_REGISTRY)
     parser.add_argument("--state-ledger", type=Path, default=DEFAULT_STATE_LEDGER)
     parser.add_argument("--experiment-summary", type=Path, default=None)
+    parser.add_argument("--sustained-summary", type=Path, default=None)
     parser.add_argument("--calibration-summary", type=Path, default=None)
     parser.add_argument("--tuning-summary", type=Path, default=None)
     parser.add_argument("--characterization-summary", type=Path, default=None)
+    parser.add_argument("--memory-admission-summary", type=Path, default=None)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    checkpoint_manifest = None
+    if args.checkpoint_manifest is not None:
+        checkpoint_manifest, manifest_paths = resolve_checkpoint_inputs(
+            manifest_path=args.checkpoint_manifest,
+            explicit_overrides={
+                "backend_matrix": None if args.backend_matrix == DEFAULT_BACKEND_MATRIX else args.backend_matrix,
+                "profiler_registry": None if args.profiler_registry == DEFAULT_PROFILER_REGISTRY else args.profiler_registry,
+                "candidate_plans": None if args.candidate_plans == DEFAULT_CANDIDATE_PLANS else args.candidate_plans,
+                "baseline_registry": None if args.baseline_registry == DEFAULT_BASELINE_REGISTRY else args.baseline_registry,
+                "workload_registry": None if args.workload_registry == DEFAULT_WORKLOAD_REGISTRY else args.workload_registry,
+                "experiment_registry": None if args.experiment_registry == DEFAULT_EXPERIMENT_REGISTRY else args.experiment_registry,
+                "plot_registry": None if args.plot_registry == DEFAULT_PLOT_REGISTRY else args.plot_registry,
+                "state_ledger": None if args.state_ledger == DEFAULT_STATE_LEDGER else args.state_ledger,
+                "experiment_summary": args.experiment_summary,
+                "sustained_summary": args.sustained_summary,
+                "calibration_summary": args.calibration_summary,
+                "tuning_summary": args.tuning_summary,
+                "characterization_summary": args.characterization_summary,
+                "memory_admission_summary": args.memory_admission_summary,
+            },
+        )
+        args.backend_matrix = manifest_paths["backend_matrix"]
+        args.profiler_registry = manifest_paths["profiler_registry"]
+        args.candidate_plans = manifest_paths["candidate_plans"]
+        args.baseline_registry = manifest_paths["baseline_registry"]
+        args.workload_registry = manifest_paths["workload_registry"]
+        args.experiment_registry = manifest_paths["experiment_registry"]
+        args.plot_registry = manifest_paths["plot_registry"]
+        args.state_ledger = manifest_paths["state_ledger"]
+        args.experiment_summary = manifest_paths["experiment_summary"]
+        args.sustained_summary = manifest_paths.get("sustained_summary")
+        args.calibration_summary = manifest_paths.get("calibration_summary")
+        args.tuning_summary = manifest_paths.get("tuning_summary")
+        args.characterization_summary = manifest_paths.get("characterization_summary")
+        args.memory_admission_summary = manifest_paths.get("memory_admission_summary")
+
     backend_matrix = load_json(args.backend_matrix)
     profiler_registry = load_json(args.profiler_registry)
     candidate_plans = load_json(args.candidate_plans)
+    baseline_registry = load_json(args.baseline_registry)
+    workload_registry = load_json(args.workload_registry)
     experiment_registry = load_json(args.experiment_registry)
     plot_registry = load_json(args.plot_registry)
     state_ledger = load_json(args.state_ledger)
 
     experiment_summary_path = args.experiment_summary or latest_experiment_summary(experiment_registry)
     experiment_summary = load_json(experiment_summary_path)
-    sustained_summary_path = latest_sustained_summary(experiment_registry)
-    sustained_summary = load_json(sustained_summary_path) if sustained_summary_path else None
+    sustained_summary_path = args.sustained_summary or latest_sustained_summary(experiment_registry)
+    sustained_summary = load_optional_json(sustained_summary_path)
     calibration_summary_path = args.calibration_summary or latest_analysis_summary(DEFAULT_ANALYSIS_ROOT, "graphpilot_cost_calibration")
-    calibration_summary = load_json(calibration_summary_path) if calibration_summary_path else None
+    calibration_summary = load_optional_json(calibration_summary_path)
     tuning_summary_path = args.tuning_summary or latest_analysis_summary(DEFAULT_ANALYSIS_ROOT, "graphpilot_hparam_tuning")
-    tuning_summary = load_json(tuning_summary_path) if tuning_summary_path else None
+    tuning_summary = load_optional_json(tuning_summary_path)
     characterization_summary_path = args.characterization_summary or latest_analysis_summary(
         DEFAULT_ANALYSIS_ROOT, "graphpilot_characterization"
     )
-    characterization_summary = load_json(characterization_summary_path) if characterization_summary_path else None
-    memory_admission_summary_path = latest_analysis_summary(DEFAULT_ANALYSIS_ROOT, "graphpilot_memory_admission")
-    memory_admission_summary = load_json(memory_admission_summary_path) if memory_admission_summary_path else None
+    characterization_summary = load_optional_json(characterization_summary_path)
+    memory_admission_summary_path = args.memory_admission_summary or latest_analysis_summary(
+        DEFAULT_ANALYSIS_ROOT, "graphpilot_memory_admission"
+    )
+    memory_admission_summary = load_optional_json(memory_admission_summary_path)
     repeat_stats = build_repeat_stats(profiler_registry)
     retrieval_ablation = build_workflow_c_retrieval_ablation(profiler_registry)
     stream_summary = build_stream_scheduling_summary(candidate_plans)
@@ -1156,6 +1322,7 @@ def main(argv: list[str] | None = None) -> int:
         stream_summary,
         memory_admission_summary,
         characterization_summary,
+        checkpoint_manifest,
     )
     write_paper_tables(
         pack_dir / "paper_tables.md",
@@ -1179,11 +1346,26 @@ def main(argv: list[str] | None = None) -> int:
         stream_summary,
         memory_admission_summary,
         characterization_summary,
+        checkpoint_manifest,
     )
-    write_final_audit(pack_dir / "final_audit_report.md", backend_matrix, experiment_summary, repeat_stats, sustained_summary)
+    if checkpoint_manifest is not None:
+        checkpoint_manifest = {
+            **checkpoint_manifest,
+            "checkpoint_manifest_path": str(args.checkpoint_manifest.resolve()),
+        }
+    write_final_audit(
+        pack_dir / "final_audit_report.md",
+        backend_matrix,
+        experiment_summary,
+        repeat_stats,
+        sustained_summary,
+        baseline_registry=baseline_registry,
+        checkpoint_manifest=checkpoint_manifest,
+    )
 
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "checkpoint_manifest": str(args.checkpoint_manifest.resolve()) if args.checkpoint_manifest else None,
         "experiment_summary": str(Path(experiment_summary_path).resolve()),
         "sustained_summary": str(sustained_summary_path.resolve()) if sustained_summary_path else None,
         "calibration_summary": str(calibration_summary_path.resolve()) if calibration_summary_path else None,
@@ -1193,6 +1375,8 @@ def main(argv: list[str] | None = None) -> int:
         "backend_matrix": str(args.backend_matrix.resolve()),
         "profiler_registry": str(args.profiler_registry.resolve()),
         "candidate_plans": str(args.candidate_plans.resolve()),
+        "baseline_registry": str(args.baseline_registry.resolve()),
+        "workload_registry": str(args.workload_registry.resolve()),
         "plot_outputs": [
             str(pack_dir / "backend_feasibility.svg"),
             str(pack_dir / "workflow_latency.svg"),

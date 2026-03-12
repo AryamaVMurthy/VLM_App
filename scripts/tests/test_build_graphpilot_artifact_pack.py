@@ -350,6 +350,155 @@ class BuildGraphPilotArtifactPackTest(unittest.TestCase):
             updated_plot_registry = json.loads(plot_registry.read_text(encoding="utf-8"))
             self.assertGreaterEqual(len(updated_plot_registry["plots"]), 7)
 
+    def test_main_uses_checkpoint_manifest_and_marks_open_scope_partial(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            backend = root / "backend.json"
+            profiler = root / "profiler.json"
+            plans = root / "plans.json"
+            experiments = root / "experiments.json"
+            plot_registry = root / "plots.json"
+            state = root / "state.json"
+            baseline_registry = root / "baseline_registry.json"
+            workload_registry = root / "workload_registry.json"
+            experiment_summary = root / "batch_summary.json"
+            sustained_summary = root / "sustained_summary.json"
+            calibration_summary = root / "calibration_summary.json"
+            tuning_summary = root / "tuning_summary.json"
+            characterization_summary = root / "characterization_summary.json"
+            memory_admission_summary = root / "memory_admission_summary.json"
+            checkpoint_manifest = root / "checkpoint_summary.json"
+            output_root = root / "out"
+
+            backend.write_text(
+                json.dumps(
+                    {
+                        "stages": [
+                            {
+                                "stage_id": "asr.primary",
+                                "backends": {
+                                    "cpu": {"status": "feasible_smoke_pass"},
+                                    "gpu": {"status": "infeasible_no_backend_adapter"},
+                                    "npu": {"status": "infeasible_no_backend_adapter"},
+                                },
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            profiler.write_text(json.dumps({"entries": []}), encoding="utf-8")
+            plans.write_text(json.dumps({"plans": []}), encoding="utf-8")
+            experiments.write_text(json.dumps({"experiments": []}), encoding="utf-8")
+            plot_registry.write_text(json.dumps({"plots": []}), encoding="utf-8")
+            state.write_text(json.dumps({"current_phase": "Phase 0"}), encoding="utf-8")
+            baseline_registry.write_text(
+                json.dumps(
+                    {
+                        "baseline_ids": ["cpu_only", "current_deployed_plan", "stage_greedy"],
+                        "workloads": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            workload_registry.write_text(json.dumps({"workloads": []}), encoding="utf-8")
+            experiment_summary.write_text(
+                json.dumps(
+                    {
+                        "actual_workflows": {
+                            "workflow_a_voice_only": {
+                                "variant": "graphpilot_cpu_stack",
+                                "warm_latency_ms": 1000,
+                                "ttft_ms": 200,
+                                "tts_first_chunk_queued_ms": 240,
+                                "tts_first_audio_ms": 300,
+                            }
+                        },
+                        "candidate_workflows": {},
+                        "comparisons": [],
+                        "blocked_workflows": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            sustained_summary.write_text(json.dumps({"samples": [], "workflow_summary": {}}), encoding="utf-8")
+            calibration_summary.write_text(
+                json.dumps({"global_orchestration_overhead_ms": 123.0}),
+                encoding="utf-8",
+            )
+            tuning_summary.write_text(json.dumps({"best_objective_weights": {}, "best_scheduler_weights": {}}), encoding="utf-8")
+            characterization_summary.write_text(
+                json.dumps(
+                    {
+                        "backend_affinity": {"resource_win_counts": {"cpu": 1, "gpu": 0, "npu": 0}},
+                        "baseline_comparisons": {},
+                        "ablations": {"pipeline": []},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            memory_admission_summary.write_text(json.dumps({}), encoding="utf-8")
+            checkpoint_manifest.write_text(
+                json.dumps(
+                    {
+                        "truth_source_pdf": str(root / "truth.pdf"),
+                        "canonical_evidence_paths": {
+                            "backend_matrix": str(backend),
+                            "profiler_registry": str(profiler),
+                            "candidate_plans": str(plans),
+                            "baseline_registry": str(baseline_registry),
+                            "workload_registry": str(workload_registry),
+                            "experiment_registry": str(experiments),
+                            "plot_registry": str(plot_registry),
+                            "state_ledger": str(state),
+                            "experiment_summary": str(experiment_summary),
+                            "sustained_summary": str(sustained_summary),
+                            "calibration_summary": str(calibration_summary),
+                            "tuning_summary": str(tuning_summary),
+                            "characterization_summary": str(characterization_summary),
+                            "memory_admission_summary": str(memory_admission_summary),
+                        },
+                        "required_baseline_ids": [
+                            "cpu_only",
+                            "gpu_only",
+                            "npu_only",
+                            "current_deployed_plan",
+                            "stage_greedy",
+                            "static_best_map",
+                            "no_pipeline",
+                            "no_fallback_aware",
+                        ],
+                        "open_beads": [
+                            {"id": "fvlm-i6n.11", "title": "Implement fair baseline suite"},
+                            {"id": "fvlm-i6n.12", "title": "Generate final artifact pack report paper and audit"},
+                        ],
+                        "closed_beads": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            rc = self.module.main(
+                [
+                    "--checkpoint-manifest",
+                    str(checkpoint_manifest),
+                    "--output-root",
+                    str(output_root),
+                ]
+            )
+
+            self.assertEqual(rc, 0)
+            pack_summary = next(output_root.glob("artifact_pack_*/summary.json"))
+            payload = json.loads(pack_summary.read_text(encoding="utf-8"))
+            self.assertEqual(payload["checkpoint_manifest"], str(checkpoint_manifest.resolve()))
+            self.assertEqual(payload["baseline_registry"], str(baseline_registry.resolve()))
+            self.assertEqual(payload["workload_registry"], str(workload_registry.resolve()))
+            audit_text = pathlib.Path(payload["final_audit_report"]).read_text(encoding="utf-8")
+            self.assertIn("Open Beads", audit_text)
+            self.assertIn("fvlm-i6n.11", audit_text)
+            self.assertIn("Missing required baseline IDs", audit_text)
+            self.assertIn("PARTIAL", audit_text)
+
 
 if __name__ == "__main__":
     unittest.main()
