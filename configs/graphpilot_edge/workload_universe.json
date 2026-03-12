@@ -960,6 +960,32 @@
       "deadline_ms": 24000
     },
     {
+      "workload_id": "continuous.workflow_c.queue_overload",
+      "category": "continuous_stream",
+      "description": "Queue-overload workflow-C stream for deadline miss and queue-growth studies under dense arrivals.",
+      "datasets": [
+        "GQA",
+        "BEIR",
+        "SLURP"
+      ],
+      "tags": [
+        "continuous",
+        "workflow_c",
+        "retrieval",
+        "queue_overload"
+      ],
+      "base_workload_id": "compound.workflow_c.high_recall_rag",
+      "arrivals_ms": [
+        0,
+        700,
+        1400,
+        2100,
+        2800,
+        3500
+      ],
+      "deadline_ms": 18000
+    },
+    {
       "workload_id": "stress.workflow_b.high_visual_tokens",
       "category": "stress_failure",
       "builder": "assistant_workflow",
@@ -985,6 +1011,36 @@
         "image_resolution": 1152,
         "visual_token_budget": 448,
         "tts_chunk_size_chars": 96,
+        "tts_quality_mode": "high"
+      }
+    },
+    {
+      "workload_id": "stress.workflow_b.shape_volatility",
+      "category": "stress_failure",
+      "builder": "assistant_workflow",
+      "description": "Workflow-B shape-volatility stress case for image-size swings and visual-token-budget sensitivity.",
+      "datasets": [
+        "DocVQA",
+        "ChartQA",
+        "MMMU",
+        "SLURP"
+      ],
+      "tags": [
+        "stress",
+        "workflow_b",
+        "shape_volatility"
+      ],
+      "params": {
+        "workflow_id": "workflow_b_voice_vision",
+        "audio_duration_ms": 3600,
+        "stt_chunk_size_ms": 640,
+        "planner_prompt_tokens": 128,
+        "planner_output_tokens": 40,
+        "responder_prompt_tokens": 512,
+        "responder_output_tokens": 112,
+        "image_resolution": 1280,
+        "visual_token_budget": 384,
+        "tts_chunk_size_chars": 88,
         "tts_quality_mode": "high"
       }
     },
@@ -1046,6 +1102,43 @@
         "visual_token_budget": 384,
         "retrieval_query_tokens": 64,
         "retrieval_corpus_size": 16000,
+        "retrieval_top_k": 10,
+        "retrieval_rerank": true,
+        "tts_chunk_size_chars": 96,
+        "tts_quality_mode": "high"
+      }
+    },
+    {
+      "workload_id": "stress.workflow_c.fallback_penalty",
+      "category": "stress_failure",
+      "builder": "assistant_workflow",
+      "description": "Workflow-C fallback-penalty stress case that amplifies retrieval and responder pressure to expose bad fake-offload choices.",
+      "datasets": [
+        "BEIR",
+        "GQA",
+        "SLURP"
+      ],
+      "tags": [
+        "stress",
+        "workflow_c",
+        "fallback_penalty"
+      ],
+      "params": {
+        "workflow_id": "workflow_c_voice_vision_retrieval",
+        "audio_duration_ms": 4200,
+        "stt_chunk_size_ms": 640,
+        "stt_beam_size": 6,
+        "planner_prompt_tokens": 144,
+        "planner_output_tokens": 48,
+        "responder_prompt_tokens": 704,
+        "responder_context_tokens": 3328,
+        "responder_output_tokens": 160,
+        "responder_context_cap": 3328,
+        "responder_max_output_tokens": 160,
+        "image_resolution": 1024,
+        "visual_token_budget": 384,
+        "retrieval_query_tokens": 64,
+        "retrieval_corpus_size": 24000,
         "retrieval_top_k": 10,
         "retrieval_rerank": true,
         "tts_chunk_size_chars": 96,

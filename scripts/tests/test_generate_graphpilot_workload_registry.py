@@ -84,6 +84,19 @@ class GenerateGraphPilotWorkloadRegistryTest(unittest.TestCase):
             self.assertEqual(continuous["base_workload_id"], "compound.workflow_a.default")
             self.assertEqual(continuous["arrivals_ms"], [0, 1500])
 
+    def test_default_registry_contains_cases_stress_and_queue_workloads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = pathlib.Path(tmp) / "workload_registry.json"
+
+            rc = self.module.main(["--output", str(output_path)])
+
+            self.assertEqual(rc, 0)
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            workload_ids = {entry["workload_id"] for entry in payload["workloads"]}
+            self.assertIn("continuous.workflow_c.queue_overload", workload_ids)
+            self.assertIn("stress.workflow_b.shape_volatility", workload_ids)
+            self.assertIn("stress.workflow_c.fallback_penalty", workload_ids)
+
     def test_cli_invocation_writes_registry_from_repo_root(self):
         script_path = pathlib.Path(__file__).resolve().parents[1] / "generate_graphpilot_workload_registry.py"
         result = subprocess.run(

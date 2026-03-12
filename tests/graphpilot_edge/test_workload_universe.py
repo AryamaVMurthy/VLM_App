@@ -140,7 +140,10 @@ class WorkloadUniverseTest(unittest.TestCase):
         self.assertIn("model.glue.retrieval_chunk_pack", self.universe.specs)
         self.assertIn("continuous.workflow_b.poisson", self.universe.specs)
         self.assertIn("continuous.workflow_c.poisson_heavy", self.universe.specs)
+        self.assertIn("continuous.workflow_c.queue_overload", self.universe.specs)
         self.assertIn("stress.workflow_b.high_visual_tokens", self.universe.specs)
+        self.assertIn("stress.workflow_b.shape_volatility", self.universe.specs)
+        self.assertIn("stress.workflow_c.fallback_penalty", self.universe.specs)
 
         datasets = {
             dataset
@@ -246,6 +249,23 @@ class WorkloadUniverseTest(unittest.TestCase):
         responder = scenario.node_profiles["responder.primary"]
         self.assertEqual(responder.knob_values["max_output_tokens"], 192)
         self.assertGreater(responder.task_profile.memory_bytes, 0)
+
+    def test_fallback_and_queue_stress_workloads_are_configured(self):
+        queue_stress = self.universe.specs["continuous.workflow_c.queue_overload"]
+        self.assertEqual(queue_stress.base_workload_id, "compound.workflow_c.high_recall_rag")
+        self.assertGreater(len(queue_stress.arrivals_ms), 4)
+
+        fallback = self.universe.build_scenario("stress.workflow_c.fallback_penalty")
+        self.assertEqual(
+            fallback.node_profiles["retrieval.embedder.primary"].knob_values["top_k"],
+            10,
+        )
+
+        shape_volatility = self.universe.build_scenario("stress.workflow_b.shape_volatility")
+        self.assertEqual(
+            shape_volatility.node_profiles["vlm.fastvlm.primary"].knob_values["visual_token_budget"],
+            384,
+        )
 
 
 if __name__ == "__main__":
