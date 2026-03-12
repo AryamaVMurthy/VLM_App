@@ -66,6 +66,12 @@ class BuildGraphPilotCasesFiguresTest(unittest.TestCase):
                 json.dumps(
                     {
                         "baseline_comparisons": {
+                            "compound_workloads": [
+                                {
+                                    "workload_id": "compound.workflow_a.default",
+                                    "graphpilot_margin_vs_best_other_ms": -120.0,
+                                }
+                            ],
                             "continuous_workloads": [
                                 {
                                     "workload_id": "continuous.workflow_a.poisson",
@@ -156,6 +162,8 @@ class BuildGraphPilotCasesFiguresTest(unittest.TestCase):
                 "offline_online_split.png",
                 "workload_universe_coverage.svg",
                 "workload_universe_coverage.png",
+                "evaluation_overview.png",
+                "sensitivity_overview.png",
                 "sim_real_calibration.svg",
                 "sim_real_calibration.png",
                 "workflow_primary_results.svg",
@@ -176,6 +184,29 @@ class BuildGraphPilotCasesFiguresTest(unittest.TestCase):
             ):
                 self.assertTrue((summary_path.parent / name).exists(), msg=name)
             self.assertEqual(payload["checkpoint_manifest"], str(checkpoint_manifest.resolve()))
+
+    def test_signed_bar_rendering_supports_negative_and_positive_values(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            svg_path = root / "signed_bars.svg"
+            png_path = root / "signed_bars.png"
+
+            rows = [
+                ("negative_case", -120.0),
+                ("zero_case", 0.0),
+                ("positive_case", 240.0),
+            ]
+
+            module.write_bar_svg(svg_path, "Signed bar test", rows, "delta ms")
+            module.write_bar_png(png_path, "Signed bar test", rows, "delta ms")
+
+            self.assertTrue(svg_path.exists())
+            self.assertTrue(png_path.exists())
+            svg_text = svg_path.read_text(encoding="utf-8")
+            self.assertIn("Signed bar test", svg_text)
+            self.assertIn("-120.0", svg_text)
+            self.assertIn("240.0", svg_text)
 
 
 if __name__ == "__main__":

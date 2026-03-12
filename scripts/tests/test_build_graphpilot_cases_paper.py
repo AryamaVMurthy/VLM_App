@@ -84,6 +84,8 @@ class BuildGraphPilotCasesPaperTest(unittest.TestCase):
                 "architecture_overview.png",
                 "offline_online_split.png",
                 "workload_universe_coverage.png",
+                "evaluation_overview.png",
+                "sensitivity_overview.png",
                 "continuous_stream_results.png",
                 "baseline_comparison.png",
                 "ablation_breakdown.png",
@@ -120,6 +122,8 @@ class BuildGraphPilotCasesPaperTest(unittest.TestCase):
                             str(figures_dir / "architecture_overview.png"),
                             str(figures_dir / "offline_online_split.png"),
                             str(figures_dir / "workload_universe_coverage.png"),
+                            str(figures_dir / "evaluation_overview.png"),
+                            str(figures_dir / "sensitivity_overview.png"),
                             str(figures_dir / "sim_real_calibration.png"),
                             str(figures_dir / "workflow_primary_results.png"),
                             str(figures_dir / "continuous_stream_results.png"),
@@ -173,13 +177,16 @@ class BuildGraphPilotCasesPaperTest(unittest.TestCase):
             self.assertTrue(
                 {
                     "abstract.tex",
+                    "algorithms.tex",
                     "conclusion.tex",
+                    "discussion.tex",
                     "evaluation.tex",
                     "introduction.tex",
-                    "limitations.tex",
+                    "prototype_anchor.tex",
                     "related_work.tex",
                     "simulator.tex",
                     "system_design.tex",
+                    "workloads.tex",
                 }.issubset({pathlib.Path(path).name for path in payload["section_files"]})
             )
             main_tex = (summary_path.parent / "main.tex").read_text(encoding="utf-8")

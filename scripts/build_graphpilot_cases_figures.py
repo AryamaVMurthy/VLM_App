@@ -79,20 +79,29 @@ def write_bar_svg(path: Path, title: str, rows: list[tuple[str, float]], x_label
     width = 980
     height = 120 + 52 * max(len(rows), 1)
     left = 260
-    max_value = max((value for _, value in rows), default=1.0)
-    scale = 620.0 / max(max_value, 1.0)
+    values = [value for _, value in rows]
+    min_value = min(values + [0.0])
+    max_value = max(values + [0.0])
+    span = max(max_value - min_value, 1.0)
+    scale = 620.0 / span
+    zero_x = left + (-min_value * scale)
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">',
         f'<text x="24" y="36" font-size="24" font-family="monospace">{title}</text>',
         f'<text x="{left}" y="{height - 18}" font-size="14" font-family="monospace">{x_label}</text>',
+        f'<line x1="{zero_x:.1f}" y1="58" x2="{zero_x:.1f}" y2="{height - 36}" stroke="#333" stroke-width="2" />',
     ]
     y = 70
     for label, value in rows:
-        bar_width = value * scale
+        bar_start = min(zero_x, zero_x + value * scale)
+        bar_end = max(zero_x, zero_x + value * scale)
         parts.append(f'<text x="20" y="{y + 18}" font-size="14" font-family="monospace">{label}</text>')
-        parts.append(f'<rect x="{left}" y="{y}" width="{bar_width:.1f}" height="24" fill="#4c78a8" />')
         parts.append(
-            f'<text x="{left + bar_width + 10:.1f}" y="{y + 18}" font-size="14" font-family="monospace">{value:.1f}</text>'
+            f'<rect x="{bar_start:.1f}" y="{y}" width="{max(bar_end - bar_start, 1.0):.1f}" height="24" fill="#4c78a8" />'
+        )
+        label_x = (bar_end + 10.0) if value >= 0 else max(bar_start - 58.0, 20.0)
+        parts.append(
+            f'<text x="{label_x:.1f}" y="{y + 18}" font-size="14" font-family="monospace">{value:.1f}</text>'
         )
         y += 46
     parts.append("</svg>")
@@ -103,19 +112,27 @@ def write_bar_png(path: Path, title: str, rows: list[tuple[str, float]], x_label
     width = 1100
     height = 140 + 60 * max(len(rows), 1)
     left = 320
-    max_value = max((value for _, value in rows), default=1.0)
-    scale = 680.0 / max(max_value, 1.0)
+    values = [value for _, value in rows]
+    min_value = min(values + [0.0])
+    max_value = max(values + [0.0])
+    span = max(max_value - min_value, 1.0)
+    scale = 680.0 / span
+    zero_x = int(round(left + (-min_value * scale)))
     image = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(image)
     font = ImageFont.load_default()
     draw.text((24, 24), title, fill="black", font=font)
     draw.text((left, height - 28), x_label, fill="black", font=font)
+    draw.line((zero_x, 60, zero_x, height - 36), fill="#333333", width=2)
     y = 72
     for label, value in rows:
-        bar_width = int(round(value * scale))
+        bar_extent = int(round(value * scale))
+        bar_start = min(zero_x, zero_x + bar_extent)
+        bar_end = max(zero_x, zero_x + bar_extent)
         draw.text((20, y + 8), label, fill="black", font=font)
-        draw.rectangle((left, y, left + bar_width, y + 24), fill="#4c78a8", outline="#1f3552")
-        draw.text((left + bar_width + 12, y + 8), f"{value:.1f}", fill="black", font=font)
+        draw.rectangle((bar_start, y, max(bar_end, bar_start + 1), y + 24), fill="#4c78a8", outline="#1f3552")
+        label_x = (bar_end + 12) if value >= 0 else max(bar_start - 52, 20)
+        draw.text((label_x, y + 8), f"{value:.1f}", fill="black", font=font)
         y += 52
     image.save(path)
 
@@ -328,6 +345,39 @@ def write_line_png(path: Path, title: str, series_map: dict[str, list[tuple[floa
     image.save(path)
 
 
+def select_top_abs_rows(rows: list[tuple[str, float]], limit: int) -> list[tuple[str, float]]:
+    ranked = sorted(rows, key=lambda item: (abs(item[1]), item[0]), reverse=True)
+    return ranked[:limit]
+
+
+def write_composite_png(path: Path, title: str, image_paths: list[tuple[str, Path]], columns: int = 2) -> None:
+    opened = [(label, Image.open(image_path).convert("RGB")) for label, image_path in image_paths]
+    if not opened:
+        raise ValueError("Composite figure requires at least one source image.")
+    thumb_size = (520, 340)
+    label_height = 28
+    tile_w = thumb_size[0] + 20
+    tile_h = thumb_size[1] + label_height + 20
+    rows = (len(opened) + columns - 1) // columns
+    width = columns * tile_w + 40
+    height = rows * tile_h + 90
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default()
+    draw.text((24, 20), title, fill="black", font=font)
+    for index, (label, source) in enumerate(opened):
+        row = index // columns
+        col = index % columns
+        ox = 20 + col * tile_w
+        oy = 60 + row * tile_h
+        tile = source.copy()
+        tile.thumbnail(thumb_size)
+        image.paste(tile, (ox + (thumb_size[0] - tile.width) // 2, oy + label_height))
+        draw.rectangle((ox, oy, ox + thumb_size[0], oy + tile_h - 20), outline="#b0b0b0", width=1)
+        draw.text((ox + 8, oy + 6), label, fill="black", font=font)
+    image.save(path)
+
+
 def write_tables_tex(path: Path, markdown_source: Path) -> None:
     path.write_text(
         "\n".join(
@@ -476,6 +526,7 @@ def main(argv: list[str] | None = None) -> int:
         (entry["workload_id"], float(entry.get("delta_ms", 0.0)))
         for entry in characterization_summary.get("ablations", {}).get("pipeline", [])
     ]
+    ablation_rows = select_top_abs_rows(ablation_rows, 10)
     write_bar_svg(
         output_dir / "ablation_breakdown.svg",
         "Pipeline ablation delta by workload",
@@ -546,6 +597,27 @@ def main(argv: list[str] | None = None) -> int:
         "total error",
     )
 
+    write_composite_png(
+        output_dir / "evaluation_overview.png",
+        "Evaluation overview",
+        [
+            ("Calibration deltas", output_dir / "sim_real_calibration.png"),
+            ("Primary workflows", output_dir / "workflow_primary_results.png"),
+            ("Continuous streams", output_dir / "continuous_stream_results.png"),
+            ("Baseline margins", output_dir / "baseline_comparison.png"),
+        ],
+    )
+    write_composite_png(
+        output_dir / "sensitivity_overview.png",
+        "Sensitivity and robustness overview",
+        [
+            ("Fallback penalty", output_dir / "fallback_penalty.png"),
+            ("Pipeline ablation", output_dir / "ablation_breakdown.png"),
+            ("Thermal plan bank", output_dir / "thermal_plan_bank.png"),
+            ("Objective sensitivity", output_dir / "objective_sensitivity.png"),
+        ],
+    )
+
     write_tables_tex(output_dir / "tables.tex", paper_tables_path)
 
     summary = {
@@ -564,6 +636,8 @@ def main(argv: list[str] | None = None) -> int:
                 "offline_online_split.png",
                 "workload_universe_coverage.svg",
                 "workload_universe_coverage.png",
+                "evaluation_overview.png",
+                "sensitivity_overview.png",
                 "sim_real_calibration.svg",
                 "sim_real_calibration.png",
                 "workflow_primary_results.svg",

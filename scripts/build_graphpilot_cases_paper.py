@@ -27,6 +27,8 @@ REQUIRED_FIGURE_NAMES = (
     "architecture_overview.png",
     "offline_online_split.png",
     "workload_universe_coverage.png",
+    "evaluation_overview.png",
+    "sensitivity_overview.png",
     "sim_real_calibration.png",
     "workflow_primary_results.png",
     "continuous_stream_results.png",
@@ -776,7 +778,7 @@ def build_abstract(checkpoint_manifest: dict[str, Any], experiment_summary: dict
     return dedent(
         rf"""
         \begin{{abstract}}
-        GraphPilot-Edge is a profiler-driven runtime and calibrated simulator for continuous multimodal assistant DAGs on Snapdragon SM8750. The system keeps support-safe placement explicit: FastVLM runs on the LiteRT NPU path, while the current deployed text and speech stages remain on verified CPU backends, and infeasible GPU/NPU paths are recorded rather than hidden behind fallback. GraphPilot-Edge combines checkpoint-pinned profiling, multi-resource simulation, streaming-aware scheduling, and explicit memory/KV admission control. On the canonical checkpoint used for this paper, workflow A reaches {fmt_ms(a.get('warm_latency_ms'))} ms warm latency with {fmt_ms(a.get('ttft_ms'))} ms TTFT and {fmt_ms(a.get('tts_first_audio_ms'))} ms TTFS, workflow B reaches {fmt_ms(b.get('warm_latency_ms'))} ms / {fmt_ms(b.get('ttft_ms'))} ms / {fmt_ms(b.get('tts_first_audio_ms'))} ms, and workflow C reaches {fmt_ms(c.get('warm_latency_ms'))} ms / {fmt_ms(c.get('ttft_ms'))} ms / {fmt_ms(c.get('tts_first_audio_ms'))} ms. The calibrated simulator is strongest on retrieval-family workloads ({fmt_num(retrieval_mae, 1)} ms mean absolute error) and still weakest on VLM-family workloads ({fmt_num(vlm_mae, 1)} ms mean absolute error), so we use it for ranking, sensitivity analysis, and baseline comparison rather than claiming exact end-to-end prediction in every regime. The paper packages the runtime, the calibrated simulator, the workload universe, method-class proxy baselines, and a single canonical artifact checkpoint rooted in {paper_ref_label(truth_source)}.
+        GraphPilot-Edge is a profiler-driven runtime and calibrated simulator for continuous multimodal assistant DAGs on Snapdragon SM8750. The deployed system keeps support-safe placement explicit: FastVLM runs on the LiteRT NPU path, while text and speech stages stay on verified CPU backends until stronger backend evidence exists. GraphPilot combines checkpoint-pinned profiling, multi-resource simulation, streaming-aware scheduling, and explicit memory/KV admission control. On the canonical checkpoint, workflow A reaches {fmt_ms(a.get('warm_latency_ms'))} ms warm latency with {fmt_ms(a.get('ttft_ms'))} ms TTFT and {fmt_ms(a.get('tts_first_audio_ms'))} ms TTFS; workflow B reaches {fmt_ms(b.get('warm_latency_ms'))} ms / {fmt_ms(b.get('ttft_ms'))} ms / {fmt_ms(b.get('tts_first_audio_ms'))} ms; and workflow C reaches {fmt_ms(c.get('warm_latency_ms'))} ms / {fmt_ms(c.get('ttft_ms'))} ms / {fmt_ms(c.get('tts_first_audio_ms'))} ms. The calibrated simulator is strongest on retrieval-family workloads ({fmt_num(retrieval_mae, 1)} ms mean absolute error) and still weakest on VLM-family workloads ({fmt_num(vlm_mae, 1)} ms mean absolute error), so the paper uses it for ranking and sensitivity analysis rather than for exact prediction in every regime. All figures, tables, and claims are generated from one canonical checkpoint rooted in {paper_ref_label(truth_source)}.
         \end{{abstract}}
 
         \paragraph*{{Keywords}} mobile SoCs, heterogeneous scheduling, multimodal assistants, support-safe execution, simulator calibration, runtime systems.
@@ -789,15 +791,13 @@ def build_introduction(checkpoint_manifest: dict[str, Any], experiment_summary: 
     return dedent(
         rf"""
         \section{{Introduction}}
-        Edge assistants are no longer single-model pipelines. A realistic on-device assistant mixes speech recognition, text planning, multimodal reasoning, retrieval, response generation, and speech synthesis, all on one thermally constrained mobile SoC. The scheduling problem is not just ``pick the fastest accelerator''; it is a continuous, mixed-criticality DAG scheduling problem with support-safe backend feasibility, transfer costs, queueing delay, memory pressure, and time-to-first-speech requirements.
+        Edge assistants are not single-model pipelines. A practical on-device assistant mixes speech recognition, planning, multimodal reasoning, retrieval, response generation, and speech synthesis on one thermally constrained mobile SoC. The scheduler therefore has to reason jointly about support-safe feasibility, transfers, queueing, memory/KV pressure, and time to first speech; raw accelerator throughput is not enough.
 
-        GraphPilot-Edge addresses that problem for the concrete workflows that the current prototype already runs on device: (A) ASR $\rightarrow$ Planner $\rightarrow$ Responder $\rightarrow$ TTS, (B) ASR $\rightarrow$ Planner $\rightarrow$ VLM $\rightarrow$ Responder $\rightarrow$ TTS, and (C) ASR $\rightarrow$ Planner $\rightarrow$ (VLM $\parallel$ Retrieval) $\rightarrow$ Responder $\rightarrow$ TTS. The deployed path is intentionally narrow and honest: FastVLM stays on the LiteRT NPU path, while text and speech stages remain on support-safe CPU implementations until stronger backend evidence exists.
+        GraphPilot-Edge addresses that problem for the concrete workflows already deployed on device: (A) ASR $\rightarrow$ Planner $\rightarrow$ Responder $\rightarrow$ TTS, (B) ASR $\rightarrow$ Planner $\rightarrow$ VLM $\rightarrow$ Responder $\rightarrow$ TTS, and (C) ASR $\rightarrow$ Planner $\rightarrow$ (VLM $\parallel$ Retrieval) $\rightarrow$ Responder $\rightarrow$ TTS. The deployed path is intentionally narrow and honest: FastVLM stays on the LiteRT NPU path, while text and speech stages remain on support-safe CPU implementations until stronger backend evidence exists.
 
-        That honesty is central to the paper. We do not count silent fallback as successful offload, and we do not turn infeasible GPU/NPU text paths into a paper claim by averaging them into a simulator-only story. Instead, we build a support-safe runtime, a calibrated simulator anchored to the same checkpoint, and a workload universe broad enough to show what GraphPilot can and cannot currently optimize.
+        The paper claim follows that boundary. GraphPilot contributes: (1) a real Android runtime with explicit support-safe stage placement, streaming, and memory/KV control; (2) a calibrated multi-resource simulator anchored to the same checkpointed device evidence; (3) a broad workload universe plus faithful method-class proxy baselines inside the same environment; and (4) a checkpoint-pinned paper/artifact surface that prevents result drift.
 
-        Our contributions are fourfold. First, we present a runtime that keeps support-safe stage placement, responder-to-TTS streaming, and memory/KV admission explicit on SM8750. Second, we present a calibrated multi-resource simulator whose objective includes latency, TTFS, queue delay, miss rate, memory, copy, energy proxy, and quality loss. Third, we evaluate GraphPilot against internal baselines and faithful method-class proxies inside the same environment. Fourth, we release the paper, figures, tables, and audit outputs from a single canonical checkpoint manifest to prevent artifact drift.
-
-        The current checkpoint demonstrates the following primary device results: {workflow_lines[0]} {workflow_lines[1]} {workflow_lines[2]}
+        The canonical checkpoint demonstrates the following primary device results: {workflow_lines[0]} {workflow_lines[1]} {workflow_lines[2]}
         """
     ).strip() + "\n"
 
@@ -815,18 +815,13 @@ def build_prototype_anchor_section(experiment_summary: dict[str, Any] | None, ba
     return dedent(
         rf"""
         \section{{Prototype Anchor and Honest Scope}}
-        The starting point for this paper is not a simulator-only study. The current GraphPilot artifact already contains a working Android runtime, a planner, a memory/KV admission surface, and a support-safe deployment that executes three end-to-end assistant workflows on SM8750. The deployed best path is intentionally narrow: workflow A runs on CPU-only support-safe stages, workflow B keeps FastVLM on the LiteRT NPU path while retaining CPU text and speech stages, and workflow C keeps the same NPU VLM path while leaving retrieval on CPU because the measured GPU retrieval variant is slower on this device generation.
+        This paper is anchored on a real deployed runtime, not on simulator-only evidence. The current GraphPilot artifact contains a working Android pipeline, explicit memory/KV admission, and three support-safe end-to-end workflows on SM8750. The deployed best path is intentionally narrow: workflow A is CPU-only, workflow B keeps FastVLM on the LiteRT NPU path while retaining CPU text and speech stages, and workflow C keeps the same NPU VLM path while leaving retrieval on CPU because the measured GPU retrieval variant is slower on this device generation.
 
-        The primary checkpointed workflow results are therefore treated as the anchor rather than as a preliminary footnote. Workflow A reaches {fmt_ms(a.get('warm_latency_ms'))} ms warm latency with {fmt_ms(a.get('ttft_ms'))} ms TTFT and {fmt_ms(a.get('tts_first_audio_ms'))} ms TTFS. Workflow B reaches {fmt_ms(b.get('warm_latency_ms'))} ms warm latency while preserving the support-safe FastVLM NPU path. Workflow C reaches {fmt_ms(c.get('warm_latency_ms'))} ms on the deployed {workflow_c_path} backend map, and the checkpoint records that the CPU retrieval plan beats the support-safe GPU retrieval alternative.
+        That anchor defines the claim boundary. The artifact proves device-side streaming, support-safe backend accounting, and measurable end-to-end assistant behavior. It does not yet prove universal support-safe GPU/NPU text execution or full online realization of every simulator-side policy. The paper therefore claims a support-safe runtime plus a calibrated simulator for broader policy exploration, not universal heterogeneous deployment.
 
-        This anchor matters because it defines both what the paper can already prove and what it cannot yet prove. The current artifact proves that GraphPilot is a real runtime with real device-side streaming, support-safe backend accounting, and measurable end-to-end assistant behavior. It does not yet prove that all major stage families run support-safely across CPU, GPU, and NPU, nor does it prove that the online runtime already realizes every scheduling policy studied in the simulator. The CASES paper therefore scopes the claim to the measured system: a support-safe runtime plus a calibrated simulator for broader policy exploration.
+        The checkpoint-pinned feasibility matrix makes that scope explicit. FastVLM's NPU status is {latex_escape(str(fastvlm_npu))}, while text and speech feasibility remain CPU-dominant. Workflow C's deployed map is {workflow_c_path}, and the checkpoint records that CPU retrieval beats the support-safe GPU retrieval alternative.
 
-        The checkpoint-pinned feasibility matrix makes this scope explicit. FastVLM's NPU status is {latex_escape(str(fastvlm_npu))}, while text and speech feasibility remain CPU-dominant. That asymmetry is not hidden; it is the reason the paper centers fallback-aware costing, queue-aware scheduling, and honest sim-to-real calibration instead of pretending that every stage is already heterogeneously deployable.
-
-        \begin{{itemize}}
-        \item What the current system already proves: working end-to-end runtime, live responder-to-TTS streaming, one real parallel branch in workflow C, and explicit support-safe feasibility tracking.
-        \item What the current system does not yet prove: universal support-safe GPU/NPU text execution, arbitrary online global replanning, or a claim that every simulator-side plan is already deployable on-device.
-        \end{{itemize}}
+        {make_feasibility_table(backend_matrix)}
         """
     ).strip() + "\n"
 
@@ -845,7 +840,6 @@ def build_differentiation_section() -> str:
 
 
 def build_system_design(experiment_summary: dict[str, Any] | None, backend_matrix: dict[str, Any] | None) -> str:
-    support_safe_note = "The feasibility table is generated from the checkpoint-pinned backend matrix and therefore records infeasibility explicitly instead of suppressing it."
     return dedent(
         rf"""
         \section{{Runtime and Problem Formulation}}
@@ -858,17 +852,16 @@ def build_system_design(experiment_summary: dict[str, Any] | None, backend_matri
         \end{{equation}}
         The hard constraints are equally important: every assigned stage or macro-region must be support-safe, memory must stay within the runtime budget, and quality loss must stay below the configured tolerance.
 
-        The practical interpretation of the objective is as important as the equation. TTFS is not a secondary metric for assistants; it is the observable latency at which the system starts speaking back to the user. Queue delay and miss rate matter because the paper targets continuous traffic rather than a single isolated query. Copy cost, peak memory, and quality loss matter because mobile heterogeneity is often lost to movement, residency, or degradation rather than raw compute throughput. The objective therefore exists to prevent GraphPilot from optimizing the wrong thing.
+        TTFS is a first-class optimization target because assistants are judged by when they start speaking, not only by total completion time. Queue delay and miss rate belong in the same objective because the target workload is continuous traffic rather than one isolated query. Copy cost and peak memory also belong in the objective because mobile heterogeneity often loses at data movement or residency, not at raw compute.
 
-        Offline, GraphPilot profiles feasible variants, separates responder prefill from decode, enumerates candidate placements, and scores them under queue-aware and memory-aware costs. Online, the Android runtime enforces explicit backend assignments, streams responder tokens into chunked TTS, and applies admission, degradation, and rejection decisions when memory/KV pressure exceeds the safe budget. This is a real runtime path, not only a simulator. The runtime makes three design commitments that are central to the paper: it never counts hidden fallback as native acceleration, it keeps responder prefill and decode as distinct regimes, and it treats queueing plus memory/KV control as part of the scheduling problem rather than as post-hoc diagnostics.
+        Offline, GraphPilot profiles feasible variants, separates responder prefill from decode, enumerates candidate placements, and scores them under queue-aware and memory-aware costs. Online, the Android runtime enforces explicit backend assignments, streams responder tokens into chunked TTS, and applies admission, degradation, and rejection decisions when memory/KV pressure exceeds the safe budget. Three design commitments matter most: hidden fallback never counts as native acceleration, prefill and decode remain distinct regimes, and queueing plus memory/KV control are part of scheduling rather than post-hoc diagnostics.
 
-        The deployed system currently uses only a subset of the theoretically possible backend choices, but the formulation already supports the broader space. Each node chooses a variant, a hardware assignment, and a knob vector. Each edge chooses a release mode and release threshold. This is the right abstraction because it covers both support-safe deployed plans and simulator-side what-if plans under the same notation.
-
-        Design goals follow directly from the revision report: (1) support-safe placement instead of optimistic offload, (2) streaming-aware TTFS improvement rather than throughput-only optimization, (3) explicit memory and KV accounting under burst load, and (4) enough simulator fidelity to rank plans honestly against the same device family. The point of the paper is not that every backend path already wins, but that the same framework can explain why some attractive heterogeneous plans fail once support safety, transfers, queueing, and thermal drift are made explicit.
-
-        {support_safe_note}
-
-        \input{{tables}}
+        \begin{{figure}}[t]
+        \centering
+        \includegraphics[width=\columnwidth]{{figures/offline_online_split.png}}
+        \caption{{Offline/online split used by GraphPilot: checkpoint-pinned profiling and planning offline, explicit scheduling and memory control online.}}
+        \label{{fig:offline-online}}
+        \end{{figure}}
         """
     ).strip() + "\n"
 
@@ -885,11 +878,11 @@ def build_workloads_section(workload_registry: dict[str, Any] | None, baseline_r
     return dedent(
         rf"""
         \section{{Workload Universe and Comparison Matrix}}
-        The broader CASES evidence does not stop at the three deployed workflows. The checkpoint-pinned workload registry contains {workload_count} workloads spanning {latex_escape(category_sentence)}. This workload universe is important because it lets the simulator answer questions that the deployed support-safe runtime cannot yet answer directly, such as how GraphPilot behaves under mixed-criticality streams, explicit fallback-pressure cases, and workload families that share the same scheduling substrate but not the same on-device adapters.
+        The broader CASES evidence does not stop at the three deployed workflows. The checkpoint-pinned workload registry contains {workload_count} workloads spanning {latex_escape(category_sentence)}. This broader universe lets the simulator test queueing, fallback pressure, and family-level backend affinity without pretending that every workload is already deployable on device.
 
-        The workload structure follows the revision report. Primitive-operator workloads isolate GEMM, attention, convolution, ANN, audio-frontend, and control-heavy glue behavior. Model-family workloads cover LLM, VLM, STT, TTS, retrieval, CNN, ViT, and sequential glue tasks. Compound assistant DAGs include the deployed A/B/C workflows plus document QA, chart QA, MMMU-style reasoning, mobile-actions planning, and higher-recall retrieval variants. Continuous-stream workloads inject Poisson arrivals, bursty arrivals, queue-overload traces, and mixed foreground/background jobs. Stress workloads probe long context, high visual tokens, shape volatility, small chunks, and fallback-sensitive cases.
+        The workload structure follows the revision report. Primitive-operator workloads isolate GEMM, attention, convolution, ANN, audio-frontend, and glue behavior. Model-family workloads cover LLM, VLM, STT, TTS, retrieval, CNN, ViT, and sequential glue tasks. Compound DAGs extend A/B/C with document QA, chart QA, MMMU-style reasoning, mobile-actions planning, and retrieval variants. Continuous streams inject Poisson arrivals, bursty arrivals, and mixed foreground/background jobs. Stress workloads probe long context, visual-token pressure, shape volatility, small chunks, and fallback-sensitive cases.
 
-        The revision report also requires the workload families to expose the knobs that actually move latency, TTFS, and memory:
+        Each workload family exposes the knobs that actually move latency, TTFS, and memory:
         \begin{{itemize}}
         \item LLM families vary prompt length, output length, retrieval-token budget, quantization, and prefill/decode placement.
         \item VLM families vary image resolution, crop count, and visual-token budget so the simulator can study dense one-shot multimodal work separately from text-only decoding.
@@ -898,18 +891,14 @@ def build_workloads_section(workload_registry: dict[str, Any] | None, baseline_r
         \item CNN, ViT, and glue workloads provide non-assistant counterexamples that test whether the scheduler is merely overfit to A/B/C.
         \end{{itemize}}
 
-        Each workload family exposes stage-specific knobs because the revision report argues that a mobile scheduler is only credible if it reasons about the levers that actually matter. LLM workloads vary prompt length, output length, retrieval budget, and prefill/decode placement. VLM workloads vary image resolution, crop count, and visual-token budget. STT and TTS workloads vary chunk size and quality modes. Retrieval workloads vary corpus size, top-$k$, and probe count. CNN, ViT, and glue workloads supply the conv-heavy, token-heavy, and control-heavy counterexamples needed to test whether GraphPilot is merely overfit to the three assistant workflows.
+        The checkpoint currently includes the following baseline IDs: {latex_escape(baseline_sentence)}. All of them run inside the same simulator/runtime environment, which prevents comparisons against incompatible hardware or hidden support assumptions. A/B/C remain the primary device results; the broader workload universe is used for simulator calibration, characterization, and proxy-baseline comparisons.
 
-        The baseline matrix is equally broad. The checkpoint currently includes the following baseline IDs: {latex_escape(baseline_sentence)}. These policies are all implemented inside the same simulator/runtime environment, which matters because it prevents the paper from comparing GraphPilot to numbers produced on different hardware or with incompatible support assumptions. The paper uses this broader workload universe for two purposes. First, it measures stage-family affinities, transfer overheads, and thermal drift outside the narrow deployed path. Second, it ensures that the comparison story is not built from one friendly workflow while the simulator ignores the difficult cases.
-
-        The broader workload universe also justifies the hybrid evidence strategy. A/B/C remain the primary device results because they are the support-safe deployed flows. The additional families give the simulator enough breadth to show where GraphPilot's scheduling logic generalizes, where it ties with simpler baselines because the feasible set is narrow, and where hidden fallback or memory pressure erase the naive accelerator win.
-
-        \begin{{figure*}}[t]
+        \begin{{figure}}[t]
         \centering
-        \includegraphics[width=0.96\textwidth]{{figures/workload_universe_coverage.png}}
+        \includegraphics[width=\columnwidth]{{figures/workload_universe_coverage.png}}
         \caption{{Checkpoint-pinned workload-universe coverage used to support the hybrid evidence strategy.}}
         \label{{fig:workload-coverage}}
-        \end{{figure*}}
+        \end{{figure}}
         """
     ).strip() + "\n"
 
@@ -929,9 +918,9 @@ def build_simulator_section(calibration_summary: dict[str, Any] | None, characte
         \end{{equation}}
         unless the producer and consumer share a compatible memory space.
 
-        Public hardware facts and surrogate parameters are kept separate by design. Public anchors cover the existence of the Oryon CPU complex, the LiteRT/QNN NPU path, the memory hierarchy class, and officially documented runtime support. The simulator then fits the quantities that are not vendor facts: effective service rates, transfer bias, launch overhead after framework cost, thermal time constants, and contention coefficients. This separation matters because it prevents the paper from smuggling undocumented hardware claims into the model.
+        Public hardware facts and surrogate parameters are kept separate by design. Public anchors cover the CPU complex, the LiteRT/QNN NPU path, and documented runtime support. The simulator fits the undocumented quantities: effective service rates, transfer bias, launch overhead after framework cost, thermal time constants, and contention coefficients.
 
-        The revision report prescribes a layered calibration procedure, and GraphPilot follows that same structure:
+        The calibration procedure follows the revision report:
         \begin{{itemize}}
         \item direct CPU, GPU, and NPU stage-family measurements where support-safe adapters exist;
         \item synthetic transfer and launch-overhead measurements so small streaming stages are not modeled as pure compute;
@@ -939,14 +928,14 @@ def build_simulator_section(calibration_summary: dict[str, Any] | None, characte
         \item family-level and workflow-level validation instead of only one end-to-end error number.
         \end{{itemize}}
 
-        The simulator also makes fallback a first-class phenomenon. If a stage or region contains unsupported operations on a candidate resource, GraphPilot partitions the region into supported and unsupported subregions, charges the intermediate transfers explicitly, and records the fallback-aware latency instead of the optimistic accelerator latency. That is the core mechanism that keeps the simulator aligned with the support-safe runtime story.
-
-        Responder prefill and decode stay distinct in both the simulator and the runtime. The simulator therefore models a one-time prefill cost, an optional KV migration cost, and a per-token decode cost, rather than collapsing the responder into one opaque stage. Memory and KV cache accounting use the same admission and degradation surfaces that the runtime logs on device. The same section also models batching and thermal slowdown, because small streaming stages are often launch-bound while longer sustained runs are dominated by temperature and contention.
+        The simulator also makes fallback a first-class phenomenon. Unsupported operations are partitioned explicitly, intermediate transfers are charged, and the fallback-aware latency is recorded instead of an optimistic accelerator latency. Responder prefill and decode stay distinct in both the simulator and the runtime.
 
         {calibration_lines[0]}
         {calibration_lines[1]}
 
-        These residuals matter. They mean the current simulator is suitable for support-safe ranking, sensitivity studies, and baseline comparisons, but the paper does not claim exact latency prediction for every family. That limitation is surfaced directly in Table~\ref{{tab:calibration}} and in the sim-to-real figure. In other words, the simulator is publishable because it is calibrated, validated, and scoped correctly, not because it claims oracle-level prediction.
+        These residuals matter. They mean the simulator is suitable for support-safe ranking, sensitivity studies, and baseline comparisons, but the paper does not claim exact latency prediction for every family.
+
+        {make_calibration_table(calibration_summary)}
         """
     ).strip() + "\n"
 
@@ -961,8 +950,6 @@ def build_algorithms_section(tuning_summary: dict[str, Any] | None) -> str:
         \section{{Planning, Scheduling, and Memory Control}}
         GraphPilot solves the search problem in layers rather than with one opaque optimizer. First, each stage or macro-region keeps only the non-dominated support-safe choices on latency, memory, energy proxy, quality proxy, and fallback risk. Second, stage-level backend maps are enumerated exhaustively over the feasible set. Third, opened heavy stages use macro-region beam search with dominance pruning. Fourth, the discrete-event simulator ranks the surviving plans before the top candidates are executed on device.
 
-        This layered structure is a deliberate response to the complexity of the search space. A naive brute-force search over stage choice, macro-region choice, stream mode, chunk size, and knob settings grows too quickly once VLM and responder internals are opened. Frontier extraction and stage-level exhaustive search therefore act as the pruning stage, while beam search is reserved for the heavy stages where the cost model says there is enough performance upside to justify additional complexity.
-
         The online runtime uses a HEFT-style critical-path score with first-output, copy, memory, and thermal terms:
         \begin{{equation}}
         \mathrm{{rank}}_u(i)=\bar{{T}}_i + \max_{{j \in Succ(i)}}(\bar{{C}}_{{i \rightarrow j}} + \mathrm{{rank}}_u(j)),
@@ -970,7 +957,7 @@ def build_algorithms_section(tuning_summary: dict[str, Any] | None) -> str:
         \begin{{equation}}
         P(\tau,b)=w_r \mathrm{{rank}}_u + w_f F(\tau) + w_a A(\tau) - w_c C_{{copy}} - w_m R_{{mem}} - w_t R_{{thermal}}.
         \end{{equation}}
-        The checkpoint-pinned tuning summary selected objective weights {latex_escape(objective_sentence)} and scheduler weights {latex_escape(scheduler_sentence)}. These tuned weights are not universal truths; they are part of the artifact and therefore part of the reproducibility surface.
+        The checkpoint-pinned tuning summary selected objective weights {latex_escape(objective_sentence)} and scheduler weights {latex_escape(scheduler_sentence)}. These are artifact-level parameters, not universal constants.
 
         Continuous simulation and online dispatch then share the same timing primitives. For ready task $u$ on hardware instance $h$, the simulator computes
         \begin{{equation}}
@@ -987,7 +974,7 @@ def build_algorithms_section(tuning_summary: dict[str, Any] | None) -> str:
         \end{{equation}}
         and degradation chooses the smallest quality-plus-latency harm per unit of freed memory. Decode remains sticky unless a one-time KV migration can be justified, and runtime logs record the resulting decision explicitly. This matters more than small single-kernel wins because queueing, TTFS, and rejection behavior dominate user-visible quality once requests overlap.
 
-        Finally, GraphPilot keeps the claim narrow where the implementation is narrow. The planner and scheduler reason about many more potential placements than the current runtime can safely deploy, but only the support-safe deployed placements are treated as device facts. The simulator-side algorithmic story is therefore explicitly about ranking and comparative analysis, not about claiming that every ranked plan is already deployable.
+        The planner and scheduler reason about more placements than the current runtime can safely deploy, but only support-safe deployed placements are treated as device facts. The simulator-side algorithmic story is therefore about ranking and comparative analysis, not about claiming that every ranked plan is already deployable.
         """
     ).strip() + "\n"
 
@@ -1009,13 +996,9 @@ def build_methodology_section(
         \section{{Methodology and Calibration Procedure}}
         The artifact follows a single-manifest methodology. A checkpoint pins the experiment summary, calibration summary, characterization summary, backend matrix, workload registry, baseline registry, and final audit inputs. The paper then consumes that checkpoint and refuses to mix in newer ``latest'' files. For the active build, the primary experiment summary is pinned at {paper_ref_label(experiment_path)}, the calibration summary at {paper_ref_label(calibration_path)}, and the characterization summary at {paper_ref_label(characterization_path)}.
 
-        Calibration and evaluation proceed in three loops. First, GraphPilot revalidates the support-safe deployed workflows on device. Second, the calibration scripts fit surrogate launch-overhead, transfer-bias, contention, and thermal terms against the same device evidence. Third, the characterization and baseline scripts exercise the simulator over the broader workload universe. The active checkpoint contains {comparison_count} direct workflow comparison rows and {family_count} family-level calibration entries, while the characterization layer records ablation groups for {latex_escape(ablation_groups)}.
+        Calibration and evaluation proceed in three loops: revalidate the support-safe deployed workflows on device; fit surrogate launch-overhead, transfer-bias, contention, and thermal terms against the same device evidence; then run characterization and proxy-baseline studies over the broader workload universe. The active checkpoint contains {comparison_count} direct workflow comparison rows and {family_count} family-level calibration entries, while the characterization layer records ablation groups for {latex_escape(ablation_groups)}.
 
-        The methodology is deliberately asymmetric because the system itself is asymmetric. Workflows A/B/C and explicit memory-admission behavior are device results. Continuous-stream studies, fallback-sensitive scheduling cases, and method-class proxy baselines live primarily in the simulator. The connection between the two is the checkpoint-pinned calibration loop and the requirement that all offload claims stay support-safe. The paper therefore treats simulator-vs-real agreement as a measured quantity rather than a hidden assumption.
-
-        This methodology also controls the truth surface. The same checkpoint drives the figure bundle, the tables, the paper draft, and the final audit. The builder fails fast if the figure bundle or artifact pack come from a different checkpoint. That checkpoint discipline is not cosmetic; it is the mechanism that prevents the paper from turning into a mixture of old device runs, newer simulator outputs, and inconsistent audits.
-
-        Finally, the methodology follows the revision-report result blocks directly: prototype anchor, simulator accuracy, fallback penalty, baseline scheduling comparison, memory/KV pressure, thermal/plan-bank behavior, objective sensitivity, and workload breadth. The paper only discusses a result block when the corresponding canonical artifact is present in the checkpoint. This is why the evaluation can be broad without becoming vague: every block has a fixed purpose, a fixed evidence source, and a fixed relationship to the central claim.
+        The methodology is asymmetric because the system itself is asymmetric. Workflows A/B/C and explicit memory-admission behavior are device results. Continuous-stream studies, fallback-sensitive scheduling cases, and method-class proxy baselines live primarily in the simulator. The same checkpoint drives the figure bundle, the tables, the paper draft, and the final audit, which is how the build prevents truth-surface drift.
         """
     ).strip() + "\n"
 
@@ -1068,96 +1051,55 @@ def build_evaluation_section(experiment_summary: dict[str, Any] | None, characte
     return dedent(
         rf"""
         \section{{Evaluation}}
-        The evaluation follows the hybrid evidence plan from the revision report. Real-device results stay centered on workflows A/B/C and the support-safe deployed backend map. Broader workload families, continuous-stream regimes, and method-class proxy baselines run inside the calibrated simulator so they share the same feasibility constraints, objective function, and workload definitions.
+        The evaluation follows the hybrid evidence plan from the revision report. Real-device results stay centered on workflows A/B/C and the support-safe deployed backend map. Broader workload families, continuous streams, and method-class proxy baselines run inside the calibrated simulator so they share the same feasibility constraints, objective function, and workload definitions.
 
-        Figure~\ref{{fig:primary-results}} reports the primary workflow latencies, and Table~\ref{{tab:workflow-results}} captures the exact warm-latency, TTFT, and TTFS numbers from the checkpoint. Figure~\ref{{fig:calibration}} shows the remaining sim-to-real deltas. The main result is not broad heterogeneous victory across every stage family; the main result is that GraphPilot keeps the real deployment support-safe, preserves the NPU FastVLM path, exposes where GPU/NPU text paths remain infeasible, and still provides a calibrated environment for ranking plans and comparing scheduling policies.
+        Figure~\ref{{fig:evaluation-overview}} reports the primary workflow latencies, calibration deltas, continuous-stream scores, and baseline margins in one aligned view, while Table~\ref{{tab:workflow-results}} captures the exact warm-latency, TTFT, and TTFS numbers from the canonical checkpoint. Figure~\ref{{fig:sensitivity-overview}} groups the fallback, ablation, thermal, and objective-sensitivity views that explain why the ranking changes.
 
-        Result block 0 is the prototype anchor: the deployed system works end to end and therefore grounds the paper in a real mobile runtime. Result block 1 is simulator accuracy: the calibrated simulator now reports family-level residuals rather than only end-to-end intuition. Result block 2 is fallback penalty: the current checkpoint records a retrieval-backend penalty of {fallback_delta} ms for workflow C when the slower GPU path is used instead of the deployed CPU retrieval path. That result is representative of the broader paper thesis: attractive heterogeneity can lose once support-safe costs are applied.
+        The main result is not broad heterogeneous victory across every stage family. The main result is that GraphPilot keeps the real deployment support-safe, preserves the NPU FastVLM path, exposes where GPU/NPU text paths remain infeasible, and still provides a calibrated environment for ranking plans and comparing scheduling policies. The current checkpoint records a retrieval-backend penalty of {fallback_delta} ms for workflow C when the slower GPU path is used instead of the deployed CPU retrieval path. That is representative of the broader thesis: attractive heterogeneity can lose once support-safe costs are applied.
 
         The broader characterization results are equally important. {characterization_lines[0]} {characterization_lines[1]} {characterization_lines[2]}
 
-        Result blocks 3 through 7 use the simulator workload universe to make the scheduling claim precise. Baseline scheduling comparisons show where GraphPilot beats simpler policies and where it only ties them because the feasible set is currently narrow. Memory/KV pressure studies show how the explicit admission controller prevents silent overcommit. Thermal studies show why the plan-bank logic matters under sustained load. Objective sensitivity studies explain whether the best policy family is stable under modest perturbations. Workload-breadth studies demonstrate that the scheduler is not tuned exclusively for one assistant DAG.
+        The baseline suite is intentionally layered. Internal baselines capture CPU-only, GPU-only where feasible, NPU-only where feasible, the current deployed plan, StageGreedy, StaticBestMap, and ablations such as NoPipeline or NoMemoryKV. Method-class proxies then represent the neighboring literature under the same support-safe environment. This matters because the paper does not compare GraphPilot against numbers produced on different hardware; it compares scheduling classes under one canonical checkpoint.
 
-        The baseline suite is intentionally layered. Internal baselines capture the obvious alternatives: CPU-only, GPU-only where feasible, NPU-only where feasible, the current deployed plan, StageGreedy, StaticBestMap, and ablations such as NoPipeline or NoMemoryKV. Method-class proxies then represent the neighboring literature under the same support-safe environment: Band-like, ADMS-like, Puzzle-like, Twill-like, HeteroInfer-like, Agent.xpu-like, and HeRo-like. This matters because the paper does not compare GraphPilot against published numbers from different hardware; it compares scheduling classes under one canonical checkpoint.
-
-        Continuous-stream studies show why queue-aware scheduling belongs in the objective even when the current feasible backend set is narrow. In the representative continuous workloads, GraphPilot's score is often tied with the current static-best-map proxy because both are forced onto nearly the same support-safe placements; that tie is itself a result, because it proves the paper is not inventing heterogeneity that the runtime cannot realize. Where GraphPilot does win, it tends to win through TTFS-aware streaming, explicit fallback avoidance, or memory/KV control rather than through a mythical accelerator path.
-
-        The most concrete backend ablation on the deployed workflows remains workflow C retrieval: the support-safe CPU retrieval path is faster than the support-safe GPU path on this device generation, so GraphPilot keeps retrieval on CPU in the deployed best plan instead of chasing a weaker accelerator story. The pinned workflow C deployed latency is {retrieval_cpu} ms warm, and the corresponding artifact pack records the slower GPU retrieval variant separately.
+        Continuous-stream studies explain why queue-aware scheduling belongs in the objective even when the current feasible backend set is narrow. Where GraphPilot wins, it tends to win through TTFS-aware streaming, explicit fallback avoidance, or memory/KV control rather than through a mythical accelerator path. Where it ties simpler policies, that tie is also informative: it reflects a narrow feasible set rather than fabricated heterogeneity.
 
         {memory_note}
 
-        \begin{{figure}}[t]
-        \centering
-        \includegraphics[width=0.98\columnwidth]{{figures/sim_real_calibration.png}}
-        \caption{{Sim-to-real latency deltas from the checkpoint-pinned calibration batch.}}
-        \label{{fig:calibration}}
-        \end{{figure}}
+        {make_workflow_results_table(experiment_summary)}
 
-        \begin{{figure}}[t]
-        \centering
-        \includegraphics[width=0.98\columnwidth]{{figures/workflow_primary_results.png}}
-        \caption{{Primary workflow warm latencies on the deployed support-safe path.}}
-        \label{{fig:primary-results}}
-        \end{{figure}}
+        {make_baseline_table(characterization_summary)}
 
-        \begin{{figure}}[t]
+        \begin{{figure*}}[t]
         \centering
-        \includegraphics[width=0.98\columnwidth]{{figures/continuous_stream_results.png}}
-        \caption{{Continuous-stream GraphPilot scores from the broader simulator workload universe.}}
-        \label{{fig:continuous}}
-        \end{{figure}}
+        \includegraphics[width=0.96\textwidth]{{figures/evaluation_overview.png}}
+        \caption{{Aligned evaluation overview combining sim-to-real deltas, primary workflow latencies, continuous-stream scores, and baseline margins from the checkpoint-pinned evidence set.}}
+        \label{{fig:evaluation-overview}}
+        \end{{figure*}}
 
-        \begin{{figure}}[t]
+        \begin{{figure*}}[t]
         \centering
-        \includegraphics[width=0.98\columnwidth]{{figures/baseline_comparison.png}}
-        \caption{{GraphPilot margin versus the best other baseline across representative workloads.}}
-        \label{{fig:baseline}}
-        \end{{figure}}
-
-        \begin{{figure}}[t]
-        \centering
-        \includegraphics[width=0.98\columnwidth]{{figures/ablation_breakdown.png}}
-        \caption{{Pipeline ablation deltas across the checkpoint-pinned workload universe.}}
-        \label{{fig:ablation}}
-        \end{{figure}}
-
-        \begin{{figure}}[t]
-        \centering
-        \includegraphics[width=0.98\columnwidth]{{figures/fallback_penalty.png}}
-        \caption{{Checkpoint-pinned fallback-sensitive comparison used to motivate support-safe costing.}}
-        \label{{fig:fallback}}
-        \end{{figure}}
-
-        \begin{{figure}}[t]
-        \centering
-        \includegraphics[width=0.98\columnwidth]{{figures/thermal_plan_bank.png}}
-        \caption{{Thermal slowdown curves that motivate plan-bank switching under sustained load.}}
-        \label{{fig:thermal}}
-        \end{{figure}}
-
-        \begin{{figure}}[t]
-        \centering
-        \includegraphics[width=0.98\columnwidth]{{figures/objective_sensitivity.png}}
-        \caption{{Objective-sensitivity candidate scores from the checkpoint-pinned tuning sweep.}}
-        \label{{fig:objective-sensitivity}}
-        \end{{figure}}
+        \includegraphics[width=0.96\textwidth]{{figures/sensitivity_overview.png}}
+        \caption{{Sensitivity overview combining fallback penalty, pipeline ablation, thermal plan-bank behavior, and objective sensitivity from the checkpoint-pinned evidence set.}}
+        \label{{fig:sensitivity-overview}}
+        \end{{figure*}}
         """
     ).strip() + "\n"
 
 
 def build_related_work() -> str:
-    return dedent(
-        r"""
+    return (
+        dedent(
+            r"""
         \section{Related Work}
-        GraphPilot-Edge sits between several nearby systems threads. Classical heterogeneous schedulers such as HEFT and CPOP provide the rank-based list-scheduling foundation but assume static execution costs and operation-complete resources. Multi-DNN mobile scheduling systems such as Band~\cite{band2022}, ADMS-style heterogeneous co-execution~\cite{adms2025}, and Puzzle~\cite{puzzle2025} study mobile heterogeneous processors but do not center continuous multimodal assistant DAGs with explicit support-safe fallback accounting. Compound-AI schedulers such as Twill~\cite{twill2025} broaden the scheduling view beyond single-model execution, while HeteroInfer~\cite{heteroinfer2025} and related LLM engines focus on single-LLM heterogeneous execution and the prefill/decode split. Agent.xpu~\cite{agentxpu2025} and HeRo~\cite{hero2026} move closer to agentic SoC orchestration, but GraphPilot differs by combining support-safe deployment, checkpoint-pinned sim-to-real calibration, and live assistant DAGs with speech in the loop.
+        GraphPilot-Edge sits between several nearby systems threads. Classical heterogeneous schedulers such as HEFT and CPOP provide the rank-based list-scheduling foundation but assume static execution costs and operation-complete resources. Mobile multi-DNN schedulers such as Band~\cite{band2022}, ADMS-style heterogeneous co-execution~\cite{adms2025}, and Puzzle~\cite{puzzle2025} target heterogeneous mobile processors but not continuous assistant DAGs with explicit support-safe fallback accounting. Compound-AI schedulers such as Twill~\cite{twill2025} and agentic SoC systems such as Agent.xpu~\cite{agentxpu2025} and HeRo~\cite{hero2026} move closer to the target setting, while HeteroInfer~\cite{heteroinfer2025} focuses on single-LLM heterogeneity and the prefill/decode split. Orca~\cite{orca2022} and PagedAttention~\cite{pagedattention2023} motivate the queueing and memory/KV perspective from serving.
 
-        On the serving side, Orca~\cite{orca2022} and PagedAttention~\cite{pagedattention2023} motivate the queueing and memory/KV perspective, but they target server-scale transformer serving rather than one mobile SoC with explicit CPU/GPU/NPU feasibility constraints. GraphPilot reuses the lessons that matter - queue-aware scheduling, KV-aware control, and explicit memory accounting - while keeping the claim scoped to a real mobile deployment.
-
-        The revision report recommends covering six communities explicitly, and that structure is useful here: classical heterogeneous scheduling, mobile inference runtimes, LLM serving systems, multi-DNN mobile schedulers, compound-AI schedulers, and agentic mobile systems. GraphPilot does not subsume every contribution from those communities. Instead, it composes the pieces that matter for one specific systems gap: continuous assistant DAGs on a real mobile SoC where unsupported paths, transfer cost, and memory/KV pressure change the practical scheduler decision.
-
-        The comparison matrix in Table~\ref{tab:comparison-matrix} is the paper's compact answer to the related-work question. GraphPilot is not presented as universally stronger than every adjacent system. Instead, it occupies the overlap that the current literature leaves thinly covered: support-safe fallback-aware scheduling of continuous multimodal assistant DAGs with simulator calibration on one heterogeneous mobile SoC.
+        GraphPilot's position is specific: support-safe fallback-aware scheduling of continuous multimodal assistant DAGs with checkpoint-pinned sim-to-real calibration on one heterogeneous mobile SoC.
         """
-    ).strip() + "\n"
+        ).strip()
+        + "\n\n"
+        + make_comparison_matrix_table()
+        + "\n"
+    )
 
 
 def build_limitations(calibration_summary: dict[str, Any] | None, characterization_summary: dict[str, Any] | None, final_audit_text: str) -> str:
@@ -1188,18 +1130,14 @@ def build_limitations(calibration_summary: dict[str, Any] | None, characterizati
 def build_discussion_section() -> str:
     return dedent(
         r"""
-        \section{Discussion and Ablation Interpretation}
-        The ablation matrix in Table~\ref{tab:ablation-matrix} is included to make the causal story explicit. GraphPilot is not one monolithic policy; it is a bundle of design commitments. Removing fallback-aware costing should make accelerator-heavy plans look better than they really are. Removing the prefill/decode split should blur the main text-stage regime change. Removing pipeline and branch-overlap logic should degrade TTFS most strongly on streaming or branched workloads. Removing memory/KV control should either force earlier rejection or create uncontrolled queueing under burst load.
+        \section{Discussion, Threats, and Limitations}
+        The ablation and baseline results make the causal story explicit. Removing fallback-aware costing makes accelerator-heavy plans look better than they really are; the workflow-C retrieval ablation is the clearest example. Removing pipeline logic helps less often than the original design hypothesis suggested, which is also informative: the present support-safe backend set is narrow enough that some richer policies collapse onto the same best map. That is not a failure of the artifact; it is evidence that the system is being measured honestly.
 
-        The current checkpoint confirms part of that story and weakens part of it. The retrieval backend ablation is strongly directional: the support-safe GPU path is slower, so GraphPilot's deployed CPU retrieval choice is justified empirically. The pipeline ablation is weaker on many workload slices than the design initially hypothesized, which is also informative. It indicates that the present support-safe backend set is narrow enough that some richer scheduling policies collapse onto the same best map. That is not a failure of the artifact; it is evidence that the system is being measured honestly.
+        The main threats to validity are equally clear. Backend feasibility is still narrow outside the FastVLM NPU path. Simulator residuals vary by family, so the simulator is appropriate for ranking and sensitivity analysis rather than for exact oracle prediction. The broader workload universe is intentionally wider than the currently deployed runtime surface, which means some policies remain calibrated what-if studies rather than online runtime behavior.
 
-        This interpretation matters for a CASES audience. A paper about mobile heterogeneity is more useful when it explains where heterogeneity is genuinely valuable and where it is currently unavailable or irrelevant. GraphPilot's contribution is strongest precisely because it does not turn narrow feasibility into broad mythology. The calibrated simulator, explicit baseline suite, and checkpointed audit surface make those boundaries visible.
-
-        The checkpoint therefore supports three concrete takeaways. First, support-safe accounting changes the story more reliably than aggressive accelerator enthusiasm. Second, queue-aware TTFS optimization and memory/KV control matter even when the feasible backend set is narrow, because user-visible latency and admission behavior are shaped by overlap and residency as much as by raw throughput. Third, sim-to-real calibration is valuable even when it is imperfect: once the residuals are reported honestly, the simulator becomes useful for ranking and sensitivity analysis rather than for pretending to be exact.
-
-        Those takeaways are also the best guide for future work. The next most valuable implementation steps are not arbitrary complexity increases; they are support-safe backend expansion for the stages that remain CPU-only, stronger family-level calibration for the highest-residual workloads, and richer online scheduling once those additional deployable backend choices exist. The current paper is strongest because it stops at that measured boundary instead of stepping past it.
+        These boundaries also define the practical takeaway. Support-safe accounting changes the story more reliably than aggressive accelerator enthusiasm. Queue-aware TTFS optimization and memory/KV control matter even when the feasible backend set is narrow. Sim-to-real calibration is useful when its residuals are reported honestly. Future work should therefore prioritize support-safe backend expansion for the stages that remain CPU-only, stronger family-level calibration for the highest-residual workloads, and richer online scheduling once those backend choices exist.
         """
-    ).strip() + "\n"
+    ).strip() + "\n\n" + make_ablation_matrix_table() + "\n"
 
 
 def build_threats_section() -> str:
@@ -1365,6 +1303,7 @@ def write_main_tex(path: Path) -> None:
             \\usepackage{booktabs}
             \\usepackage{array}
             \\usepackage{amsmath}
+            \\usepackage[section]{placeins}
             \\usepackage{url}
             \\usepackage[hidelinks]{hyperref}
             \\newcommand{\\system}{GraphPilot-Edge}
@@ -1383,13 +1322,6 @@ def write_main_tex(path: Path) -> None:
             \\label{fig:architecture}
             \\end{figure*}
 
-            \\begin{figure*}[t]
-            \\centering
-            \\includegraphics[width=0.96\\textwidth]{figures/offline_online_split.png}
-            \\caption{Offline/online split used by GraphPilot: checkpoint-pinned profiling and planning offline, explicit scheduling and memory control online.}
-            \\label{fig:offline-online}
-            \\end{figure*}
-
             \\input{sections/introduction}
             \\input{sections/prototype_anchor}
             \\input{sections/differentiation}
@@ -1402,7 +1334,6 @@ def write_main_tex(path: Path) -> None:
             \\input{sections/evaluation}
             \\input{sections/related_work}
             \\input{sections/discussion}
-            \\input{sections/threats}
             \\input{sections/limitations}
             \\input{sections/artifact}
             \\input{sections/conclusion}
@@ -1489,7 +1420,6 @@ def main(argv: list[str] | None = None) -> int:
         "evaluation.tex": build_evaluation_section(experiment_summary, characterization_summary, memory_summary),
         "related_work.tex": build_related_work(),
         "discussion.tex": build_discussion_section(),
-        "threats.tex": build_threats_section(),
         "limitations.tex": build_limitations(
             calibration_summary,
             characterization_summary,
