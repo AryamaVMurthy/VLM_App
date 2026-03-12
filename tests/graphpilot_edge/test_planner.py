@@ -86,7 +86,7 @@ class GraphPilotPlannerTest(unittest.TestCase):
                 workflow_thermal_scale=1.5,
             ),
         )
-        self.assertEqual(ranked[0].score_makespan_ms, 725)
+        self.assertEqual(ranked[0].score_makespan_ms, 575)
 
 
 if __name__ == "__main__":

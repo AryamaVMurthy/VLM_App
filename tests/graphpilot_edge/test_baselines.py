@@ -142,6 +142,20 @@ class GraphPilotBaselinesTest(unittest.TestCase):
         self.assertEqual(candidate.resource_assignment["vlm.fastvlm.primary"], "npu0")
         self.assertEqual(candidate.resource_assignment["retrieval.embedder.primary"], "cpu0")
 
+    def test_current_deployed_plan_matches_support_safe_prototype_map(self):
+        candidate = build_baseline_candidate(
+            self.workflow_c,
+            simulator=self.simulator,
+            baseline_id="current_deployed_plan",
+        )
+
+        self.assertEqual(candidate.resource_assignment["asr.primary"], "cpu0")
+        self.assertEqual(candidate.resource_assignment["planner.primary"], "cpu0")
+        self.assertEqual(candidate.resource_assignment["vlm.fastvlm.primary"], "npu0")
+        self.assertEqual(candidate.resource_assignment["retrieval.embedder.primary"], "cpu0")
+        self.assertEqual(candidate.resource_assignment["responder.primary"], "cpu0")
+        self.assertEqual(candidate.resource_assignment["tts.primary"], "cpu0")
+
     def test_no_pipeline_converts_stream_edges_to_full(self):
         candidate = build_baseline_candidate(
             self.workflow_a,
@@ -151,6 +165,20 @@ class GraphPilotBaselinesTest(unittest.TestCase):
 
         self.assertTrue(candidate.workflow.has_edge("asr.primary", "planner.primary", "full"))
         self.assertTrue(candidate.workflow.has_edge("responder.primary", "tts.primary", "full"))
+
+    def test_no_pipeline_scores_slower_than_stage_greedy_for_workflow_a(self):
+        pipelined = build_baseline_candidate(
+            self.workflow_a,
+            simulator=self.simulator,
+            baseline_id="stage_greedy",
+        )
+        no_pipeline = build_baseline_candidate(
+            self.workflow_a,
+            simulator=self.simulator,
+            baseline_id="no_pipeline",
+        )
+
+        self.assertGreater(no_pipeline.score_ms, pipelined.score_ms)
 
     def test_static_best_map_beats_cpu_only_for_workflow_b(self):
         cpu_only = build_baseline_candidate(

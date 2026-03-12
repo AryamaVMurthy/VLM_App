@@ -37,10 +37,25 @@ class GenerateGraphPilotBaselineRegistryTest(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             payload = json.loads(output_path.read_text(encoding="utf-8"))
-            self.assertEqual(sorted(payload["baseline_ids"]), sorted(["cpu_only", "gpu_only", "npu_only", "stage_greedy", "static_best_map", "no_pipeline"]))
+            self.assertEqual(
+                sorted(payload["baseline_ids"]),
+                sorted(
+                    [
+                        "cpu_only",
+                        "gpu_only",
+                        "npu_only",
+                        "current_deployed_plan",
+                        "stage_greedy",
+                        "static_best_map",
+                        "no_pipeline",
+                    ]
+                ),
+            )
             workflow_a = next(item for item in payload["workloads"] if item["workload_id"] == "compound.workflow_a.default")
             cpu_only = next(item for item in workflow_a["baselines"] if item["baseline_id"] == "cpu_only")
             self.assertEqual(cpu_only["resource_assignment"]["asr.primary"], "cpu0")
+            current_deployed = next(item for item in workflow_a["baselines"] if item["baseline_id"] == "current_deployed_plan")
+            self.assertEqual(current_deployed["resource_assignment"]["asr.primary"], "cpu0")
             npu_only = next(item for item in workflow_a["baselines"] if item["baseline_id"] == "npu_only")
             self.assertEqual(npu_only["status"], "error")
             self.assertIn("No support-safe resource", npu_only["error"])
@@ -48,6 +63,8 @@ class GenerateGraphPilotBaselineRegistryTest(unittest.TestCase):
             workflow_b = next(item for item in payload["workloads"] if item["workload_id"] == "compound.workflow_b.default")
             static_best = next(item for item in workflow_b["baselines"] if item["baseline_id"] == "static_best_map")
             self.assertEqual(static_best["resource_assignment"]["vlm.fastvlm.primary"], "npu0")
+            current_deployed_b = next(item for item in workflow_b["baselines"] if item["baseline_id"] == "current_deployed_plan")
+            self.assertEqual(current_deployed_b["resource_assignment"]["vlm.fastvlm.primary"], "npu0")
 
 
 if __name__ == "__main__":

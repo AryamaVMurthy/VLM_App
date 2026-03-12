@@ -24,7 +24,15 @@ from graphpilot_edge.workload_universe import (  # noqa: E402
 )
 
 DEFAULT_OUTPUT = ROOT_DIR / "artifacts" / "graphpilot_edge" / "registries" / "baseline_policy_registry.json"
-DEFAULT_BASELINES = ("cpu_only", "gpu_only", "npu_only", "stage_greedy", "static_best_map", "no_pipeline")
+DEFAULT_BASELINES = (
+    "cpu_only",
+    "gpu_only",
+    "npu_only",
+    "current_deployed_plan",
+    "stage_greedy",
+    "static_best_map",
+    "no_pipeline",
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

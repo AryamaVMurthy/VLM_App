@@ -43,7 +43,7 @@ class DiscreteEventSimulationTest(unittest.TestCase):
             resource_capacities={"cpu": 1, "npu": 1},
         )
 
-        self.assertEqual(result.makespan_ms, 11)
+        self.assertEqual(result.makespan_ms, 10)
         self.assertEqual(
             [event.stage_id for event in result.events if event.event_type == "start"],
             [
@@ -54,8 +54,34 @@ class DiscreteEventSimulationTest(unittest.TestCase):
                 "responder.primary",
             ],
         )
-        self.assertEqual(result.stage_timings["vlm.fastvlm.primary"].start_ms, 5)
-        self.assertEqual(result.stage_timings["retrieval.embedder.primary"].finish_ms, 9)
+        self.assertEqual(result.stage_timings["vlm.fastvlm.primary"].start_ms, 4)
+        self.assertEqual(result.stage_timings["retrieval.embedder.primary"].finish_ms, 8)
+
+    def test_stream_edges_start_consumers_before_full_finish(self):
+        pipelined = simulate_candidate_plan(
+            self.workflow,
+            self.plan,
+            resource_capacities={"cpu": 1, "npu": 1},
+        )
+        no_pipeline_workflow = WorkflowDag(
+            workflow_id="voice_vision.no_pipeline",
+            stage_ids=self.workflow.stage_ids,
+            edges=tuple(
+                WorkflowEdge(edge.source_stage_id, edge.target_stage_id, "full")
+                for edge in self.workflow.edges
+            ),
+        )
+        no_pipeline = simulate_candidate_plan(
+            no_pipeline_workflow,
+            self.plan,
+            resource_capacities={"cpu": 1, "npu": 1},
+        )
+
+        self.assertLess(pipelined.makespan_ms, no_pipeline.makespan_ms)
+        self.assertLess(
+            pipelined.stage_timings["planner.primary"].start_ms,
+            no_pipeline.stage_timings["planner.primary"].start_ms,
+        )
 
     def test_simulation_requires_explicit_resource_capacities(self):
         with self.assertRaisesRegex(ValueError, "Missing explicit resource capacity"):
@@ -107,8 +133,8 @@ class DiscreteEventSimulationTest(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(baseline.makespan_ms, 11)
-        self.assertEqual(calibrated.makespan_ms, 27)
+        self.assertEqual(baseline.makespan_ms, 10)
+        self.assertEqual(calibrated.makespan_ms, 25)
         self.assertGreater(calibrated.ttft_ms, baseline.ttft_ms)
 
     def test_stream_simulation_reports_queue_delay_and_deadline_miss_rate(self):

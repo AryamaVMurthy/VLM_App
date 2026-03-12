@@ -30,6 +30,34 @@ def _percentile(values: list[int], quantile: float) -> float:
     return float(ordered[rank])
 
 
+def _edge_release_info(
+    workflow: WorkflowDag,
+    *,
+    source_stage_id: str,
+    target_stage_id: str,
+    producer_start_ms: int,
+    producer_finish_ms: int,
+    producer_output_bytes: int,
+    producer_ttft_ms: int | None,
+) -> tuple[int, int]:
+    for edge in workflow.edges:
+        if edge.source_stage_id != source_stage_id or edge.target_stage_id != target_stage_id:
+            continue
+        duration_ms = max(1, producer_finish_ms - producer_start_ms)
+        if edge.stream_mode == "full":
+            return producer_finish_ms, producer_output_bytes
+        if edge.stream_mode == "chunk":
+            return producer_start_ms + max(1, duration_ms // 2), max(1, producer_output_bytes // 4)
+        release_ms = producer_start_ms + min(
+            duration_ms,
+            producer_ttft_ms if producer_ttft_ms is not None else max(1, duration_ms // 4),
+        )
+        return release_ms, max(1, producer_output_bytes // 16)
+    raise KeyError(
+        f"Workflow '{workflow.workflow_id}' has no edge '{source_stage_id}->{target_stage_id}'."
+    )
+
+
 def simulate_candidate_plan(
     workflow: WorkflowDag,
     plan: CandidatePlan,
@@ -62,8 +90,17 @@ def simulate_candidate_plan(
         for predecessor in workflow.predecessors(stage_id):
             predecessor_option = plan.option_for_stage(predecessor)
             same_memory = predecessor_option.backend == option.backend
+            release_ready_ms, release_output_bytes = _edge_release_info(
+                workflow,
+                source_stage_id=predecessor,
+                target_stage_id=stage_id,
+                producer_start_ms=stage_timings[predecessor].start_ms,
+                producer_finish_ms=stage_timings[predecessor].finish_ms,
+                producer_output_bytes=predecessor_option.output_bytes,
+                producer_ttft_ms=predecessor_option.ttft_ms,
+            )
             transfer_ms = compute_transfer_cost_ms(
-                size_bytes=predecessor_option.output_bytes,
+                size_bytes=release_output_bytes,
                 src_backend=predecessor_option.backend,
                 dst_backend=option.backend,
                 same_memory=same_memory,
@@ -73,7 +110,7 @@ def simulate_candidate_plan(
             )
             dependency_ready_ms = max(
                 dependency_ready_ms,
-                stage_timings[predecessor].finish_ms + int(round(transfer_ms)),
+                release_ready_ms + int(round(transfer_ms)),
             )
             if predecessor_option.backend != option.backend:
                 copy_bytes += predecessor_option.output_bytes
@@ -281,8 +318,17 @@ def simulate_request_stream(
                 predecessor_option = plan.option_for_stage(predecessor)
                 predecessor_timing = stage_timings[(request.request_id, predecessor)]
                 same_memory = predecessor_option.backend == option.backend
+                release_ready_ms, release_output_bytes = _edge_release_info(
+                    workflow,
+                    source_stage_id=predecessor,
+                    target_stage_id=stage_id,
+                    producer_start_ms=predecessor_timing.start_ms,
+                    producer_finish_ms=predecessor_timing.finish_ms,
+                    producer_output_bytes=predecessor_option.output_bytes,
+                    producer_ttft_ms=predecessor_option.ttft_ms,
+                )
                 transfer_ms = compute_transfer_cost_ms(
-                    size_bytes=predecessor_option.output_bytes,
+                    size_bytes=release_output_bytes,
                     src_backend=predecessor_option.backend,
                     dst_backend=option.backend,
                     same_memory=same_memory,
@@ -292,7 +338,7 @@ def simulate_request_stream(
                 )
                 dependency_ready_ms = max(
                     dependency_ready_ms,
-                    predecessor_timing.finish_ms + int(round(transfer_ms)),
+                    release_ready_ms + int(round(transfer_ms)),
                 )
                 if predecessor_option.backend != option.backend:
                     copy_bytes += predecessor_option.output_bytes

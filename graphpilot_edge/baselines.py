@@ -7,6 +7,7 @@ from typing import Mapping
 from .hardware_simulator import HardwarePrediction, HardwareSimulator
 from .model_graph_simulator import ModelGraphScenario
 from .models import CandidatePlan
+from .simulation import simulate_candidate_plan
 from .workflow import WorkflowDag, WorkflowEdge
 
 
@@ -38,6 +39,15 @@ def build_baseline_candidate(
             scenario,
             simulator=simulator,
             backend=backend,
+            batch_size=batch_size,
+            current_temp_c=current_temp_c,
+            utilizations=utilizations,
+        )
+        workflow = scenario.workflow
+    elif baseline_id == "current_deployed_plan":
+        assignment = _current_deployed_assignment(
+            scenario,
+            simulator=simulator,
             batch_size=batch_size,
             current_temp_c=current_temp_c,
             utilizations=utilizations,
@@ -89,12 +99,9 @@ def build_baseline_candidate(
         utilizations=utilizations,
     )
     score_ms = _assignment_score(
-        scenario,
+        workflow=workflow,
+        plan=plan,
         simulator=simulator,
-        resource_assignment=assignment,
-        batch_size=batch_size,
-        current_temp_c=current_temp_c,
-        utilizations=utilizations,
     )
     return BaselineCandidate(
         baseline_id=baseline_id,
@@ -132,6 +139,49 @@ def _single_backend_assignment(
         except ValueError as exc:
             raise ValueError(
                 f"No support-safe resource for stage '{stage_id}' on backend '{backend}': {exc}"
+            ) from exc
+        assignment[stage_id] = resource_id
+    return assignment
+
+
+def _current_deployed_assignment(
+    scenario: ModelGraphScenario,
+    *,
+    simulator: HardwareSimulator,
+    batch_size: int,
+    current_temp_c: Mapping[str, float],
+    utilizations: Mapping[str, float],
+) -> dict[str, str]:
+    supported_assistant_stages = {"asr.primary", "planner.primary", "responder.primary", "tts.primary", "vlm.fastvlm.primary", "retrieval.embedder.primary"}
+    if not any(stage_id in supported_assistant_stages for stage_id in scenario.workflow.stage_ids):
+        raise ValueError(
+            "current_deployed_plan is only defined for assistant-style GraphPilot workflows."
+        )
+    cpu_resources = simulator.resources_for_backend("cpu")
+    npu_resources = simulator.resources_for_backend("npu")
+    if not cpu_resources:
+        raise ValueError("No CPU resource exists for current_deployed_plan.")
+    cpu_resource_id = cpu_resources[0]
+    npu_resource_id = npu_resources[0] if npu_resources else None
+    assignment: dict[str, str] = {}
+    for stage_id in scenario.workflow.topological_order():
+        resource_id = cpu_resource_id
+        if stage_id == "vlm.fastvlm.primary":
+            if npu_resource_id is None:
+                raise ValueError("No NPU resource exists for current_deployed_plan VLM stage.")
+            resource_id = npu_resource_id
+        node = scenario.node_profiles[stage_id]
+        try:
+            simulator.predict_task(
+                task=node.task_profile,
+                resource_id=resource_id,
+                batch_size=batch_size,
+                current_temp_c=current_temp_c,
+                utilizations=utilizations,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"current_deployed_plan has no support-safe resource for stage '{stage_id}' on '{resource_id}': {exc}"
             ) from exc
         assignment[stage_id] = resource_id
     return assignment
@@ -187,13 +237,17 @@ def _static_best_map_assignment(
     best_score: float | None = None
     for resource_tuple in product(*feasible_resource_lists):
         candidate = dict(zip(stage_order, resource_tuple, strict=True))
-        score = _assignment_score(
-            scenario,
+        plan = scenario.instantiate_candidate_plan(
             simulator=simulator,
             resource_assignment=candidate,
             batch_size=batch_size,
             current_temp_c=current_temp_c,
             utilizations=utilizations,
+        )
+        score = _assignment_score(
+            workflow=scenario.workflow,
+            plan=plan,
+            simulator=simulator,
         )
         if best_score is None or score < best_score:
             best_assignment = candidate
@@ -204,38 +258,17 @@ def _static_best_map_assignment(
 
 
 def _assignment_score(
-    scenario: ModelGraphScenario,
     *,
+    workflow: WorkflowDag,
+    plan: CandidatePlan,
     simulator: HardwareSimulator,
-    resource_assignment: Mapping[str, str],
-    batch_size: int,
-    current_temp_c: Mapping[str, float],
-    utilizations: Mapping[str, float],
 ) -> float:
-    predictions: dict[str, HardwarePrediction] = {}
-    total_ms = 0.0
-    for stage_id in scenario.workflow.topological_order():
-        node = scenario.node_profiles[stage_id]
-        prediction = simulator.predict_task(
-            task=node.task_profile,
-            resource_id=resource_assignment[stage_id],
-            batch_size=batch_size,
-            current_temp_c=current_temp_c,
-            utilizations=utilizations,
-        )
-        predictions[stage_id] = prediction
-        total_ms += prediction.execution_time_ms
-    for edge in scenario.workflow.edges:
-        src_id = resource_assignment[edge.source_stage_id]
-        dst_id = resource_assignment[edge.target_stage_id]
-        if src_id == dst_id:
-            continue
-        total_ms += simulator.compute_transfer_time_ms(
-            size_bytes=scenario.node_profiles[edge.source_stage_id].task_profile.output_bytes,
-            src_resource_id=src_id,
-            dst_resource_id=dst_id,
-        )
-    return total_ms
+    capacities = {
+        backend: len(simulator.resources_for_backend(backend))
+        for backend in sorted({simulator.backend_label(resource_id) for resource_id in simulator.resource_ids()})
+    }
+    simulation = simulate_candidate_plan(workflow, plan, capacities)
+    return float(simulation.makespan_ms)
 
 
 def _best_resource_for_stage(

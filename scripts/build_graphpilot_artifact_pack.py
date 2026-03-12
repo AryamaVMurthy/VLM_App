@@ -282,6 +282,39 @@ def build_stream_scheduling_summary(candidate_plans: dict[str, Any]) -> dict[str
     return summary
 
 
+def build_backend_affinity_rows(characterization_summary: dict[str, Any] | None) -> list[tuple[str, float]]:
+    if not characterization_summary:
+        return []
+    counts = ((characterization_summary.get("backend_affinity") or {}).get("resource_win_counts")) or {}
+    return [
+        (backend, float(count))
+        for backend, count in sorted(counts.items())
+    ]
+
+
+def build_baseline_delta_rows(characterization_summary: dict[str, Any] | None) -> list[tuple[str, float]]:
+    if not characterization_summary:
+        return []
+    rows = []
+    comparisons = characterization_summary.get("baseline_comparisons") or {}
+    for group_name in ("compound_workloads", "continuous_workloads", "stress_workloads"):
+        for item in comparisons.get(group_name, []):
+            delta = item.get("graphpilot_margin_vs_best_other_ms")
+            if delta is None:
+                continue
+            rows.append((item["workload_id"], float(delta)))
+    return rows
+
+
+def build_pipeline_ablation_rows(characterization_summary: dict[str, Any] | None) -> list[tuple[str, float]]:
+    if not characterization_summary:
+        return []
+    rows = []
+    for item in ((characterization_summary.get("ablations") or {}).get("pipeline") or []):
+        rows.append((item["workload_id"], float(item["delta_ms"])))
+    return rows
+
+
 def build_repeat_stats(profiler_registry: dict[str, Any], sample_count: int = 3) -> dict[str, Any]:
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for entry in profiler_registry.get("entries", []):
@@ -327,6 +360,7 @@ def write_paper_tables(
     sustained_summary: dict[str, Any] | None,
     calibration_summary: dict[str, Any] | None,
     tuning_summary: dict[str, Any] | None,
+    characterization_summary: dict[str, Any] | None,
 ) -> None:
     lines = [
         "# GraphPilot-Edge Paper Tables",
@@ -396,6 +430,40 @@ def write_paper_tables(
             lines.append(
                 f"| {workflow_id} | {stats.get('count', 0)} | {warm.get('drift')} | {ttft.get('drift')} | {ttfs.get('drift')} | {skin.get('drift')} |"
             )
+    if characterization_summary:
+        lines.extend(
+            [
+                "",
+                "## Table 8: Backend Affinity Win Counts",
+                "",
+                "| Backend | Win Count |",
+                "| --- | --- |",
+            ]
+        )
+        for backend, count in build_backend_affinity_rows(characterization_summary):
+            lines.append(f"| {backend} | {count} |")
+        lines.extend(
+            [
+                "",
+                "## Table 9: Baseline Comparison Margins",
+                "",
+                "| Workload | Best-other minus GraphPilot (ms) |",
+                "| --- | --- |",
+            ]
+        )
+        for workload_id, delta in build_baseline_delta_rows(characterization_summary):
+            lines.append(f"| {workload_id} | {delta} |")
+        lines.extend(
+            [
+                "",
+                "## Table 10: Pipeline Ablation",
+                "",
+                "| Workload | NoPipeline minus GraphPilot (ms) |",
+                "| --- | --- |",
+            ]
+        )
+        for workload_id, delta in build_pipeline_ablation_rows(characterization_summary):
+            lines.append(f"| {workload_id} | {delta} |")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -409,6 +477,7 @@ def write_report(
     retrieval_ablation: dict[str, Any] | None,
     stream_summary: dict[str, Any] | None,
     memory_admission_summary: dict[str, Any] | None,
+    characterization_summary: dict[str, Any] | None,
 ) -> None:
     lines = [
         "# GraphPilot Artifact Pack",
@@ -487,6 +556,26 @@ def write_report(
                 f"p95_queue_delay_ms={metrics.get('p95_queue_delay_ms')} "
                 f"deadline_miss_rate={metrics.get('deadline_miss_rate')}"
             )
+    if characterization_summary:
+        lines.extend(
+            [
+                "",
+                "## Characterization and ablations",
+                "",
+                f"- backend_affinity_win_counts={((characterization_summary.get('backend_affinity') or {}).get('resource_win_counts'))}",
+                f"- graphpilot_policy_note={characterization_summary.get('graphpilot_policy_note')}",
+                "",
+                "### Baseline comparisons",
+                "",
+            ]
+        )
+        for workload_id, delta in build_baseline_delta_rows(characterization_summary):
+            lines.append(
+                f"- `{workload_id}` best_other_minus_graphpilot_ms={delta}"
+            )
+        lines.extend(["", "### Ablations", ""])
+        for workload_id, delta in build_pipeline_ablation_rows(characterization_summary):
+            lines.append(f"- `{workload_id}` no_pipeline_minus_graphpilot_ms={delta}")
     if retrieval_ablation:
         lines.extend(
             [
@@ -539,6 +628,7 @@ def write_paper_draft(
     retrieval_ablation: dict[str, Any] | None,
     stream_summary: dict[str, Any] | None,
     memory_admission_summary: dict[str, Any] | None,
+    characterization_summary: dict[str, Any] | None,
 ) -> None:
     actual = summary.get("actual_workflows", {})
     workflow_a = actual.get("workflow_a_voice_only", {})
@@ -756,6 +846,19 @@ def write_paper_draft(
                 f"- latest_reject=`{memory_admission_summary.get('latest_reject_line')}`",
             ]
         )
+    if characterization_summary:
+        lines.extend(
+            [
+                "",
+                "Baseline comparison summary:",
+                f"- backend win counts={((characterization_summary.get('backend_affinity') or {}).get('resource_win_counts'))}",
+                f"- graphpilot_policy_note={characterization_summary.get('graphpilot_policy_note')}",
+            ]
+        )
+        for workload_id, delta in build_pipeline_ablation_rows(characterization_summary):
+            lines.append(
+                f"- Pipeline ablation `{workload_id}` shows delta={delta} ms versus `no_pipeline`."
+            )
     if calibration_summary:
         lines.extend(
             [
@@ -931,6 +1034,30 @@ def update_plot_registry(registry: dict[str, Any], pack_dir: Path) -> None:
             "output_path": str(pack_dir / "sustained_thermal_drift.svg"),
             "paper_claim": "Thermal behavior is backed by device telemetry during sustained execution.",
         },
+        {
+            "plot_id": f"{pack_dir.name}:backend_affinity",
+            "title": "Backend affinity win counts",
+            "source_experiments": [str(pack_dir / "summary.json")],
+            "source_metrics": ["characterization_summary_inline.backend_affinity.resource_win_counts"],
+            "output_path": str(pack_dir / "backend_affinity.svg"),
+            "paper_claim": "Backend affinity is characterized across the workload universe instead of inferred from one workflow.",
+        },
+        {
+            "plot_id": f"{pack_dir.name}:baseline_comparison",
+            "title": "GraphPilot margin versus best other baseline",
+            "source_experiments": [str(pack_dir / "summary.json")],
+            "source_metrics": ["characterization_summary_inline.baseline_comparisons"],
+            "output_path": str(pack_dir / "baseline_comparison.svg"),
+            "paper_claim": "Baseline comparisons are explicit across compound and continuous workloads.",
+        },
+        {
+            "plot_id": f"{pack_dir.name}:pipeline_ablation",
+            "title": "Pipeline ablation deltas",
+            "source_experiments": [str(pack_dir / "summary.json")],
+            "source_metrics": ["characterization_summary_inline.ablations.pipeline"],
+            "output_path": str(pack_dir / "pipeline_ablation.svg"),
+            "paper_claim": "Pipeline value is isolated with an explicit no-pipeline ablation.",
+        },
     ]
     plots.extend(new_plots)
     registry["last_updated"] = datetime.now(timezone.utc).date().isoformat()
@@ -947,6 +1074,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--experiment-summary", type=Path, default=None)
     parser.add_argument("--calibration-summary", type=Path, default=None)
     parser.add_argument("--tuning-summary", type=Path, default=None)
+    parser.add_argument("--characterization-summary", type=Path, default=None)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     return parser.parse_args(argv)
 
@@ -968,6 +1096,10 @@ def main(argv: list[str] | None = None) -> int:
     calibration_summary = load_json(calibration_summary_path) if calibration_summary_path else None
     tuning_summary_path = args.tuning_summary or latest_analysis_summary(DEFAULT_ANALYSIS_ROOT, "graphpilot_hparam_tuning")
     tuning_summary = load_json(tuning_summary_path) if tuning_summary_path else None
+    characterization_summary_path = args.characterization_summary or latest_analysis_summary(
+        DEFAULT_ANALYSIS_ROOT, "graphpilot_characterization"
+    )
+    characterization_summary = load_json(characterization_summary_path) if characterization_summary_path else None
     memory_admission_summary_path = latest_analysis_summary(DEFAULT_ANALYSIS_ROOT, "graphpilot_memory_admission")
     memory_admission_summary = load_json(memory_admission_summary_path) if memory_admission_summary_path else None
     repeat_stats = build_repeat_stats(profiler_registry)
@@ -995,6 +1127,24 @@ def main(argv: list[str] | None = None) -> int:
         "sample index",
         "skin temp (C)",
     )
+    write_simple_bar_svg(
+        pack_dir / "backend_affinity.svg",
+        "Backend affinity win counts",
+        build_backend_affinity_rows(characterization_summary),
+        "win count",
+    )
+    write_simple_bar_svg(
+        pack_dir / "baseline_comparison.svg",
+        "GraphPilot margin versus best other baseline",
+        build_baseline_delta_rows(characterization_summary),
+        "delta (ms)",
+    )
+    write_simple_bar_svg(
+        pack_dir / "pipeline_ablation.svg",
+        "Pipeline ablation delta",
+        build_pipeline_ablation_rows(characterization_summary),
+        "delta (ms)",
+    )
     write_report(
         pack_dir / "report.md",
         experiment_summary,
@@ -1005,8 +1155,18 @@ def main(argv: list[str] | None = None) -> int:
         retrieval_ablation,
         stream_summary,
         memory_admission_summary,
+        characterization_summary,
     )
-    write_paper_tables(pack_dir / "paper_tables.md", backend_matrix, experiment_summary, repeat_stats, sustained_summary, calibration_summary, tuning_summary)
+    write_paper_tables(
+        pack_dir / "paper_tables.md",
+        backend_matrix,
+        experiment_summary,
+        repeat_stats,
+        sustained_summary,
+        calibration_summary,
+        tuning_summary,
+        characterization_summary,
+    )
     write_paper_draft(
         pack_dir / "paper_draft.md",
         backend_matrix,
@@ -1018,6 +1178,7 @@ def main(argv: list[str] | None = None) -> int:
         retrieval_ablation,
         stream_summary,
         memory_admission_summary,
+        characterization_summary,
     )
     write_final_audit(pack_dir / "final_audit_report.md", backend_matrix, experiment_summary, repeat_stats, sustained_summary)
 
@@ -1027,6 +1188,7 @@ def main(argv: list[str] | None = None) -> int:
         "sustained_summary": str(sustained_summary_path.resolve()) if sustained_summary_path else None,
         "calibration_summary": str(calibration_summary_path.resolve()) if calibration_summary_path else None,
         "tuning_summary": str(tuning_summary_path.resolve()) if tuning_summary_path else None,
+        "characterization_summary": str(characterization_summary_path.resolve()) if characterization_summary_path else None,
         "memory_admission_summary": str(memory_admission_summary_path.resolve()) if memory_admission_summary_path else None,
         "backend_matrix": str(args.backend_matrix.resolve()),
         "profiler_registry": str(args.profiler_registry.resolve()),
@@ -1037,6 +1199,9 @@ def main(argv: list[str] | None = None) -> int:
             str(pack_dir / "comparison_delta.svg"),
             str(pack_dir / "sustained_latency_drift.svg"),
             str(pack_dir / "sustained_thermal_drift.svg"),
+            str(pack_dir / "backend_affinity.svg"),
+            str(pack_dir / "baseline_comparison.svg"),
+            str(pack_dir / "pipeline_ablation.svg"),
         ],
         "report": str(pack_dir / "report.md"),
         "paper_tables": str(pack_dir / "paper_tables.md"),
@@ -1049,6 +1214,7 @@ def main(argv: list[str] | None = None) -> int:
         "stream_scheduling_summary": stream_summary,
         "calibration_summary_inline": calibration_summary,
         "tuning_summary_inline": tuning_summary,
+        "characterization_summary_inline": characterization_summary,
         "memory_admission_summary_inline": memory_admission_summary,
         "sustained_summary_inline": sustained_summary,
     }

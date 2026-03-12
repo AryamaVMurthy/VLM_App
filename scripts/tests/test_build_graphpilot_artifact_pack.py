@@ -111,6 +111,7 @@ class BuildGraphPilotArtifactPackTest(unittest.TestCase):
             calibration_summary = root / "calibration_summary.json"
             tuning_summary = root / "tuning_summary.json"
             output_root = root / "out"
+            characterization_summary = root / "characterization_summary.json"
 
             backend.write_text(
                 json.dumps(
@@ -257,6 +258,40 @@ class BuildGraphPilotArtifactPackTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            characterization_summary.write_text(
+                json.dumps(
+                    {
+                        "backend_affinity": {
+                            "resource_win_counts": {"cpu": 2, "gpu": 1, "npu": 3},
+                        },
+                        "baseline_comparisons": {
+                            "compound_workloads": [
+                                {
+                                    "workload_id": "compound.workflow_a.default",
+                                    "graphpilot_policy": "static_best_map",
+                                    "graphpilot_score_ms": 900.0,
+                                    "baselines": [
+                                        {"baseline_id": "cpu_only", "score_ms": 1200.0},
+                                        {"baseline_id": "no_pipeline", "score_ms": 1300.0},
+                                    ],
+                                }
+                            ]
+                        },
+                        "ablations": {
+                            "pipeline": [
+                                {
+                                    "workload_id": "compound.workflow_a.default",
+                                    "graphpilot_score_ms": 900.0,
+                                    "ablation_score_ms": 1300.0,
+                                    "delta_ms": 400.0,
+                                }
+                            ]
+                        },
+                        "report": str(root / "characterization_report.md"),
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             rc = self.module.main(
                 [
@@ -278,6 +313,8 @@ class BuildGraphPilotArtifactPackTest(unittest.TestCase):
                     str(calibration_summary),
                     "--tuning-summary",
                     str(tuning_summary),
+                    "--characterization-summary",
+                    str(characterization_summary),
                     "--output-root",
                     str(output_root),
                 ]
@@ -290,6 +327,7 @@ class BuildGraphPilotArtifactPackTest(unittest.TestCase):
             self.assertIsNotNone(payload["sustained_summary"])
             self.assertEqual(payload["calibration_summary"], str(calibration_summary.resolve()))
             self.assertEqual(payload["tuning_summary"], str(tuning_summary.resolve()))
+            self.assertEqual(payload["characterization_summary"], str(characterization_summary.resolve()))
             self.assertEqual(payload["calibration_summary_inline"]["global_orchestration_overhead_ms"], 321.0)
             self.assertEqual(payload["tuning_summary_inline"]["best_objective_weights"]["weights"]["alpha"], 2.0)
             self.assertTrue(pathlib.Path(payload["paper_tables"]).exists())
@@ -298,6 +336,8 @@ class BuildGraphPilotArtifactPackTest(unittest.TestCase):
             self.assertIn("Calibration", report_text)
             self.assertIn("Hyperparameter tuning", report_text)
             self.assertIn("Stream scheduling", report_text)
+            self.assertIn("Baseline comparisons", report_text)
+            self.assertIn("Characterization and ablations", report_text)
             self.assertIn("p95_queue_delay_ms=40.0", report_text)
             self.assertIn("tts_first_chunk_queued_ms=250", report_text)
             draft_text = pathlib.Path(payload["paper_draft"]).read_text(encoding="utf-8")
@@ -306,8 +346,9 @@ class BuildGraphPilotArtifactPackTest(unittest.TestCase):
             self.assertIn("Offline Brain", draft_text)
             self.assertIn("Online Brain", draft_text)
             self.assertIn("P95(T_queue)", draft_text)
+            self.assertIn("Baseline comparison", draft_text)
             updated_plot_registry = json.loads(plot_registry.read_text(encoding="utf-8"))
-            self.assertGreaterEqual(len(updated_plot_registry["plots"]), 5)
+            self.assertGreaterEqual(len(updated_plot_registry["plots"]), 7)
 
 
 if __name__ == "__main__":
