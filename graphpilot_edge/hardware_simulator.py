@@ -164,6 +164,12 @@ class HardwareSimulator:
         self.contention_sensitivities = dict(contention_sensitivities)
         self.ambient_temperature_c = ambient_temperature_c
 
+    def resource(self, resource_id: str) -> HardwareInstance:
+        return self._require_resource(resource_id)
+
+    def backend_label(self, resource_id: str) -> str:
+        return self._require_resource(resource_id).resource_type
+
     def predict_task(
         self,
         *,

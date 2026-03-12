@@ -1,0 +1,246 @@
+{
+  "project": "GraphPilot-Edge",
+  "schema_version": 1,
+  "workloads": [
+    {
+      "workload_id": "primitive.gemm_heavy.medium",
+      "category": "primitive_operator",
+      "builder": "primitive_operator",
+      "description": "Synthetic GEMM-heavy primitive workload for backend-affinity characterization.",
+      "datasets": ["synthetic_gemm"],
+      "tags": ["primitive", "characterization", "gemm"],
+      "params": {
+        "op_class": "gemm",
+        "op_volume": 120000.0,
+        "memory_bytes": 16777216,
+        "output_bytes": 4194304
+      }
+    },
+    {
+      "workload_id": "primitive.attn_heavy.medium",
+      "category": "primitive_operator",
+      "builder": "primitive_operator",
+      "description": "Synthetic attention-heavy primitive workload for prefill/decode affinity studies.",
+      "datasets": ["synthetic_attention"],
+      "tags": ["primitive", "characterization", "attention"],
+      "params": {
+        "op_class": "attn",
+        "op_volume": 72000.0,
+        "memory_bytes": 12582912,
+        "output_bytes": 2097152
+      }
+    },
+    {
+      "workload_id": "model.llm.short_long",
+      "category": "model_family",
+      "builder": "llm",
+      "description": "Short prompt and long answer LLM workload with explicit prefill/decode split.",
+      "datasets": ["synthetic_llm_short_long"],
+      "tags": ["llm", "prefill_decode", "model_family"],
+      "params": {
+        "prompt_tokens": 256,
+        "output_tokens": 128,
+        "context_tokens": 128,
+        "max_output_tokens": 128
+      }
+    },
+    {
+      "workload_id": "model.vlm.visual_reasoning",
+      "category": "model_family",
+      "builder": "vlm",
+      "description": "Vision-language model workload for image reasoning and visual-token budget studies.",
+      "datasets": ["GQA", "COCO"],
+      "tags": ["vlm", "model_family", "visual_reasoning"],
+      "params": {
+        "prompt_tokens": 96,
+        "output_tokens": 48,
+        "image_resolution": 896,
+        "visual_token_budget": 256
+      }
+    },
+    {
+      "workload_id": "model.stt.streaming_command",
+      "category": "model_family",
+      "builder": "stt",
+      "description": "Streaming STT workload for chunk-size and beam-size characterization.",
+      "datasets": ["LibriSpeech", "SLURP"],
+      "tags": ["stt", "model_family", "streaming"],
+      "params": {
+        "audio_duration_ms": 3200,
+        "chunk_size_ms": 800,
+        "beam_size": 4
+      }
+    },
+    {
+      "workload_id": "model.tts.streaming_reply",
+      "category": "model_family",
+      "builder": "tts",
+      "description": "Streaming TTS workload for first-audio and chunk-size studies.",
+      "datasets": ["LJSpeech", "VCTK"],
+      "tags": ["tts", "model_family", "streaming"],
+      "params": {
+        "text_tokens": 96,
+        "chunk_size_chars": 80,
+        "quality_mode": "balanced"
+      }
+    },
+    {
+      "workload_id": "model.retrieval.local_kb",
+      "category": "model_family",
+      "builder": "retrieval",
+      "description": "Embedding plus ANN retrieval workload for top-k and reranker studies.",
+      "datasets": ["BEIR"],
+      "tags": ["retrieval", "ann", "model_family"],
+      "params": {
+        "query_tokens": 32,
+        "corpus_size": 1000,
+        "top_k": 4,
+        "rerank": false
+      }
+    },
+    {
+      "workload_id": "model.cnn.classification",
+      "category": "model_family",
+      "builder": "cnn",
+      "description": "CNN classification workload for conv-heavy accelerator characterization.",
+      "datasets": ["ImageNet"],
+      "tags": ["cnn", "model_family", "classification"],
+      "params": {
+        "image_resolution": 512
+      }
+    },
+    {
+      "workload_id": "model.vit.classification",
+      "category": "model_family",
+      "builder": "vit",
+      "description": "ViT classification workload for token-heavy vision characterization.",
+      "datasets": ["ImageNet"],
+      "tags": ["vit", "model_family", "classification"],
+      "params": {
+        "image_resolution": 448,
+        "token_budget": 256
+      }
+    },
+    {
+      "workload_id": "model.glue.prompt_packing",
+      "category": "model_family",
+      "builder": "sequential_glue",
+      "description": "Sequential glue workload for tokenizer/packing/control-path studies.",
+      "datasets": ["synthetic_glue"],
+      "tags": ["glue", "model_family", "sequential"],
+      "params": {
+        "item_count": 256
+      }
+    },
+    {
+      "workload_id": "compound.workflow_a.default",
+      "category": "compound_assistant",
+      "builder": "assistant_workflow",
+      "description": "Voice-only assistant DAG preserving support-safe workflow A structure.",
+      "datasets": ["SLURP", "LibriSpeech"],
+      "tags": ["assistant", "workflow_a", "compound"],
+      "params": {
+        "workflow_id": "workflow_a_voice_only",
+        "audio_duration_ms": 3200,
+        "stt_chunk_size_ms": 800,
+        "planner_prompt_tokens": 96,
+        "planner_output_tokens": 32,
+        "responder_prompt_tokens": 384,
+        "responder_output_tokens": 96,
+        "tts_chunk_size_chars": 80
+      }
+    },
+    {
+      "workload_id": "compound.workflow_b.default",
+      "category": "compound_assistant",
+      "builder": "assistant_workflow",
+      "description": "Voice+vision assistant DAG preserving support-safe workflow B structure.",
+      "datasets": ["GQA", "COCO", "SLURP"],
+      "tags": ["assistant", "workflow_b", "compound", "vision"],
+      "params": {
+        "workflow_id": "workflow_b_voice_vision",
+        "audio_duration_ms": 3200,
+        "stt_chunk_size_ms": 800,
+        "planner_prompt_tokens": 96,
+        "planner_output_tokens": 32,
+        "responder_prompt_tokens": 384,
+        "responder_output_tokens": 96,
+        "image_resolution": 896,
+        "visual_token_budget": 256,
+        "tts_chunk_size_chars": 80
+      }
+    },
+    {
+      "workload_id": "compound.workflow_c.default",
+      "category": "compound_assistant",
+      "builder": "assistant_workflow",
+      "description": "Voice+vision+retrieval assistant DAG preserving support-safe workflow C structure.",
+      "datasets": ["GQA", "COCO", "BEIR", "SLURP"],
+      "tags": ["assistant", "workflow_c", "compound", "retrieval"],
+      "params": {
+        "workflow_id": "workflow_c_voice_vision_retrieval",
+        "audio_duration_ms": 3200,
+        "stt_chunk_size_ms": 800,
+        "planner_prompt_tokens": 96,
+        "planner_output_tokens": 32,
+        "responder_prompt_tokens": 448,
+        "responder_output_tokens": 96,
+        "image_resolution": 896,
+        "visual_token_budget": 256,
+        "retrieval_query_tokens": 32,
+        "retrieval_corpus_size": 1000,
+        "retrieval_top_k": 4,
+        "tts_chunk_size_chars": 80
+      }
+    },
+    {
+      "workload_id": "continuous.workflow_a.poisson",
+      "category": "continuous_stream",
+      "description": "Voice-only foreground request stream used for queue-delay and miss-rate studies.",
+      "datasets": ["SLURP"],
+      "tags": ["continuous", "workflow_a", "foreground"],
+      "base_workload_id": "compound.workflow_a.default",
+      "arrivals_ms": [0, 1500, 3000, 4500],
+      "deadline_ms": 12000
+    },
+    {
+      "workload_id": "continuous.workflow_c.burst",
+      "category": "continuous_stream",
+      "description": "Bursty workflow C stream for overlap, queueing, and contention studies.",
+      "datasets": ["GQA", "BEIR", "SLURP"],
+      "tags": ["continuous", "workflow_c", "burst"],
+      "base_workload_id": "compound.workflow_c.default",
+      "arrivals_ms": [0, 800, 1400, 3200],
+      "deadline_ms": 18000
+    },
+    {
+      "workload_id": "stress.workflow_c.long_context",
+      "category": "stress_failure",
+      "builder": "assistant_workflow",
+      "description": "Long-context workflow C stress case for KV pressure, memory admission, and degradation behavior.",
+      "datasets": ["GQA", "BEIR", "SLURP"],
+      "tags": ["stress", "workflow_c", "kv_pressure", "memory"],
+      "params": {
+        "workflow_id": "workflow_c_voice_vision_retrieval",
+        "audio_duration_ms": 5000,
+        "stt_chunk_size_ms": 800,
+        "stt_beam_size": 6,
+        "planner_prompt_tokens": 128,
+        "planner_output_tokens": 48,
+        "responder_prompt_tokens": 768,
+        "responder_context_tokens": 4096,
+        "responder_output_tokens": 192,
+        "responder_context_cap": 3584,
+        "responder_max_output_tokens": 192,
+        "image_resolution": 1024,
+        "visual_token_budget": 384,
+        "retrieval_query_tokens": 48,
+        "retrieval_corpus_size": 5000,
+        "retrieval_top_k": 8,
+        "retrieval_rerank": true,
+        "tts_chunk_size_chars": 96,
+        "tts_quality_mode": "high"
+      }
+    }
+  ]
+}

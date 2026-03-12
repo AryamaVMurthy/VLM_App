@@ -96,6 +96,16 @@ class WorkflowDag:
             raise ValidationError(f"Workflow DAG '{self.workflow_id}' contains a cycle.")
         return tuple(order)
 
+    def has_edge(self, source_stage_id: str, target_stage_id: str, stream_mode: str) -> bool:
+        self._require_stage(source_stage_id)
+        self._require_stage(target_stage_id)
+        return any(
+            edge.source_stage_id == source_stage_id
+            and edge.target_stage_id == target_stage_id
+            and edge.stream_mode == stream_mode
+            for edge in self.edges
+        )
+
     def chunk_size(self, stage_id: str) -> int | None:
         self._require_stage(stage_id)
         for current_stage_id, chunk_size in self.chunk_sizes:
