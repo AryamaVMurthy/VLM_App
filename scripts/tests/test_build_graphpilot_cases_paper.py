@@ -62,6 +62,133 @@ class BuildGraphPilotCasesPaperTest(unittest.TestCase):
                     ]
                 )
 
+    def test_cases_paper_builder_builds_pdf_from_template_dir(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            artifact_pack_summary = root / "artifact_pack_summary.json"
+            checkpoint_manifest = root / "checkpoint_summary.json"
+            figure_summary = root / "figure_summary.json"
+            template_dir = root / "template"
+            figures_dir = root / "figure_bundle"
+            figures_dir.mkdir()
+            png_blob = (
+                b"\x89PNG\r\n\x1a\n"
+                b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
+                b"\x00\x00\x00\x0cIDAT\x08\x99c```\x00\x00\x00\x04\x00\x01\xf6\x178U"
+                b"\x00\x00\x00\x00IEND\xaeB`\x82"
+            )
+            for name in (
+                "workflow_primary_results.png",
+                "sim_real_calibration.png",
+                "architecture_overview.png",
+                "offline_online_split.png",
+                "workload_universe_coverage.png",
+                "continuous_stream_results.png",
+                "baseline_comparison.png",
+                "ablation_breakdown.png",
+                "fallback_penalty.png",
+                "thermal_plan_bank.png",
+                "objective_sensitivity.png",
+            ):
+                (figures_dir / name).write_bytes(png_blob)
+            (figures_dir / "tables.tex").write_text(
+                "\\begin{tabular}{ll}\nA & B \\\\\n\\end{tabular}\n",
+                encoding="utf-8",
+            )
+            (root / "report.md").write_text("# Report\n", encoding="utf-8")
+            (root / "paper_tables.md").write_text("| A |\n| - |\n| 1 |\n", encoding="utf-8")
+            (root / "paper_draft.md").write_text("# Draft\n", encoding="utf-8")
+            (root / "final_audit_report.md").write_text("# Audit\n", encoding="utf-8")
+            artifact_pack_summary.write_text(
+                json.dumps(
+                    {
+                        "report": str(root / "report.md"),
+                        "paper_tables": str(root / "paper_tables.md"),
+                        "paper_draft": str(root / "paper_draft.md"),
+                        "final_audit_report": str(root / "final_audit_report.md"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            figure_summary.write_text(
+                json.dumps(
+                    {
+                        "checkpoint_manifest": str(checkpoint_manifest),
+                        "output_dir": str(figures_dir),
+                        "outputs": [
+                            str(figures_dir / "architecture_overview.png"),
+                            str(figures_dir / "offline_online_split.png"),
+                            str(figures_dir / "workload_universe_coverage.png"),
+                            str(figures_dir / "sim_real_calibration.png"),
+                            str(figures_dir / "workflow_primary_results.png"),
+                            str(figures_dir / "continuous_stream_results.png"),
+                            str(figures_dir / "baseline_comparison.png"),
+                            str(figures_dir / "ablation_breakdown.png"),
+                            str(figures_dir / "fallback_penalty.png"),
+                            str(figures_dir / "thermal_plan_bank.png"),
+                            str(figures_dir / "objective_sensitivity.png"),
+                            str(figures_dir / "tables.tex"),
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            checkpoint_manifest.write_text(
+                json.dumps(
+                    {
+                        "truth_source_pdf": str(root / "truth.pdf"),
+                        "canonical_evidence_paths": {
+                            "artifact_pack_summary": str(artifact_pack_summary),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            template_dir.mkdir()
+            (template_dir / "IEEEtran.cls").write_text(
+                "\\NeedsTeXFormat{LaTeX2e}\n"
+                "\\ProvidesClass{IEEEtran}[2026/03/12 test class]\n"
+                "\\LoadClass{article}\n",
+                encoding="utf-8",
+            )
+
+            rc = module.main(
+                [
+                    "--checkpoint-manifest",
+                    str(checkpoint_manifest),
+                    "--figure-summary",
+                    str(figure_summary),
+                    "--template-dir",
+                    str(template_dir),
+                    "--output-root",
+                    str(root / "paper_out"),
+                ]
+            )
+
+            self.assertEqual(rc, 0)
+            summary_path = next((root / "paper_out").glob("graphpilot_cases_*/summary.json"))
+            payload = json.loads(summary_path.read_text(encoding="utf-8"))
+            self.assertTrue(pathlib.Path(payload["paper_pdf"]).exists())
+            self.assertTrue(
+                {
+                    "abstract.tex",
+                    "conclusion.tex",
+                    "evaluation.tex",
+                    "introduction.tex",
+                    "limitations.tex",
+                    "related_work.tex",
+                    "simulator.tex",
+                    "system_design.tex",
+                }.issubset({pathlib.Path(path).name for path in payload["section_files"]})
+            )
+            main_tex = (summary_path.parent / "main.tex").read_text(encoding="utf-8")
+            self.assertIn("\\input{sections/system_design}", main_tex)
+            self.assertIn("\\includegraphics", main_tex)
+            self.assertEqual(payload["figure_summary"], str(figure_summary.resolve()))
+            self.assertIsInstance(payload["page_count"], int)
+            self.assertGreaterEqual(payload["page_count"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

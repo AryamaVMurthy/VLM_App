@@ -32,6 +32,7 @@ class BuildGraphPilotCasesFiguresTest(unittest.TestCase):
             calibration_summary = root / "calibration_summary.json"
             characterization_summary = root / "characterization_summary.json"
             experiment_summary = root / "experiment_summary.json"
+            workload_registry = root / "workload_registry.json"
             checkpoint_manifest = root / "checkpoint_summary.json"
             paper_tables = root / "paper_tables.md"
             dummy_plot = root / "workflow_latency.svg"
@@ -109,6 +110,18 @@ class BuildGraphPilotCasesFiguresTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            workload_registry.write_text(
+                json.dumps(
+                    {
+                        "workloads": [
+                            {"workload_id": "compound.workflow_a.default", "category": "compound_workflow"},
+                            {"workload_id": "continuous.workflow_a.poisson", "category": "continuous_stream"},
+                            {"workload_id": "stress.workflow_c.fallback_penalty", "category": "stress_failure"},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
             checkpoint_manifest.write_text(
                 json.dumps(
                     {
@@ -117,6 +130,7 @@ class BuildGraphPilotCasesFiguresTest(unittest.TestCase):
                             "calibration_summary": str(calibration_summary),
                             "characterization_summary": str(characterization_summary),
                             "experiment_summary": str(experiment_summary),
+                            "workload_registry": str(workload_registry),
                         }
                     }
                 ),
@@ -137,12 +151,27 @@ class BuildGraphPilotCasesFiguresTest(unittest.TestCase):
             payload = json.loads(summary_path.read_text(encoding="utf-8"))
             for name in (
                 "architecture_overview.svg",
+                "architecture_overview.png",
+                "offline_online_split.svg",
+                "offline_online_split.png",
+                "workload_universe_coverage.svg",
+                "workload_universe_coverage.png",
                 "sim_real_calibration.svg",
+                "sim_real_calibration.png",
                 "workflow_primary_results.svg",
+                "workflow_primary_results.png",
                 "continuous_stream_results.svg",
+                "continuous_stream_results.png",
                 "baseline_comparison.svg",
+                "baseline_comparison.png",
                 "ablation_breakdown.svg",
+                "ablation_breakdown.png",
                 "fallback_penalty.svg",
+                "fallback_penalty.png",
+                "thermal_plan_bank.svg",
+                "thermal_plan_bank.png",
+                "objective_sensitivity.svg",
+                "objective_sensitivity.png",
                 "tables.tex",
             ):
                 self.assertTrue((summary_path.parent / name).exists(), msg=name)
