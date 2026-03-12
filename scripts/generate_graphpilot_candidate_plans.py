@@ -120,11 +120,23 @@ def resolve_simulation_calibration(
     workflow_thermal = (
         calibration_summary.get("thermal_scale_by_workflow", {}).get(workflow_id, {})
     )
+    backend_thermal_factors = (
+        calibration_summary.get("backend_thermal_factors_by_workflow", {}).get(workflow_id, {})
+    )
+    backend_utilizations = (
+        calibration_summary.get("backend_utilizations_by_workflow", {}).get(workflow_id, {})
+    )
     return SimulationCalibration(
         orchestration_overhead_ms=float(
             calibration_summary.get("global_orchestration_overhead_ms", 0.0)
         ),
         workflow_thermal_scale=float(workflow_thermal.get("warm_latency_scale") or 1.0),
+        backend_thermal_factors={
+            str(backend): float(value) for backend, value in backend_thermal_factors.items()
+        },
+        backend_utilizations={
+            str(backend): float(value) for backend, value in backend_utilizations.items()
+        },
     )
 
 

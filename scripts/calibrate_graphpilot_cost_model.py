@@ -23,11 +23,22 @@ def calibrate(experiment_summary: dict[str, Any], sustained_summary: dict[str, A
     comparisons = experiment_summary.get("comparisons", [])
     if not comparisons:
         raise ValueError("Experiment summary has no comparisons. Remediation: run scripts/run_graphpilot_experiments.py first.")
-    orchestration_overhead_ms = {
+    raw_latency_deltas_ms = {
         row["workflow_id"]: float(row["latency_delta_ms"])
         for row in comparisons
     }
+    orchestration_overhead_ms = {
+        workflow_id: max(0.0, delta_ms)
+        for workflow_id, delta_ms in raw_latency_deltas_ms.items()
+    }
+    residual_bias_ms = {
+        workflow_id: delta_ms - orchestration_overhead_ms[workflow_id]
+        for workflow_id, delta_ms in raw_latency_deltas_ms.items()
+    }
     thermal_scale_by_workflow: dict[str, Any] = {}
+    backend_thermal_factors_by_workflow: dict[str, Any] = {}
+    backend_utilizations_by_workflow: dict[str, Any] = {}
+    actual_workflows = experiment_summary.get("actual_workflows", {})
     for workflow_id, workflow in sustained_summary.get("workflow_summary", {}).items():
         warm = workflow.get("warm_latency_ms") or {}
         cpu = (workflow.get("thermal") or {}).get("cpu_c") or {}
@@ -40,10 +51,39 @@ def calibrate(experiment_summary: dict[str, Any], sustained_summary: dict[str, A
             "cpu_temp_drift_c": cpu.get("drift"),
             "skin_temp_drift_c": skin.get("drift"),
         }
+        stage_backends = (actual_workflows.get(workflow_id) or {}).get("stage_backends") or {}
+        backend_counts: dict[str, int] = {}
+        for backend in stage_backends.values():
+            backend_counts[backend] = backend_counts.get(backend, 0) + 1
+        total_backend_count = sum(backend_counts.values())
+        backend_utilizations_by_workflow[workflow_id] = (
+            {
+                backend: count / total_backend_count
+                for backend, count in sorted(backend_counts.items())
+            }
+            if total_backend_count
+            else {}
+        )
+        backend_thermal_factors_by_workflow[workflow_id] = (
+            {
+                backend: scale
+                for backend in sorted(backend_counts)
+            }
+            if scale is not None
+            else {}
+        )
     return {
         "orchestration_overhead_ms": orchestration_overhead_ms,
         "global_orchestration_overhead_ms": statistics.mean(orchestration_overhead_ms.values()),
+        "residual_bias_ms": residual_bias_ms,
         "thermal_scale_by_workflow": thermal_scale_by_workflow,
+        "backend_thermal_factors_by_workflow": backend_thermal_factors_by_workflow,
+        "backend_utilizations_by_workflow": backend_utilizations_by_workflow,
+        "surrogate_parameter_notes": {
+            "backend_thermal_factors_by_workflow": "Workflow-level warm-latency slowdown assigned to participating backends as a surrogate thermal factor, because per-backend slowdown is not directly measured yet.",
+            "backend_utilizations_by_workflow": "Backend utilization proxy derived from the fraction of stages assigned to each backend in the support-safe deployed plan.",
+            "residual_bias_ms": "Signed simulator-vs-device residual after removing non-negative orchestration overhead. Negative values mean the simulator overpredicted latency."
+        },
     }
 
 

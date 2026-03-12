@@ -1,0 +1,123 @@
+{
+  "project": "GraphPilot-Edge",
+  "schema_version": 1,
+  "topology_id": "sm8750_surrogate_v1",
+  "public_anchors": [
+    "Qualcomm Snapdragon SM8750 public platform information anchors the CPU/GPU/NPU existence and shared-memory mobile topology.",
+    "All throughput, bandwidth, queue-depth, batching, and thermal coefficients in this file are surrogate calibration parameters fitted for GraphPilot-Edge experiments, not official vendor specifications."
+  ],
+  "surrogate_parameter_notes": {
+    "service_rates": "Relative op-class service rates used by the calibrated hardware simulator.",
+    "transfer_bandwidth_bytes_per_ms": "Effective host/device transfer bandwidth surrogates measured and fit from GraphPilot profiling evidence.",
+    "contention_sensitivities": "Cross-resource slowdown sensitivities used by the contention model.",
+    "thermal_*": "Thermal dynamics coefficients used to reproduce sustained-run slowdown directionally."
+  },
+  "ambient_temperature_c": 30.0,
+  "resources": [
+    {
+      "resource_id": "cpu0",
+      "resource_type": "cpu",
+      "supported_op_classes": ["control", "gather", "audio", "gemm", "attn", "ann", "conv", "elem"],
+      "service_rates": {
+        "control": 100.0,
+        "gather": 300.0,
+        "audio": 200.0,
+        "gemm": 200.0,
+        "attn": 120.0,
+        "ann": 150.0,
+        "conv": 200.0,
+        "elem": 250.0
+      },
+      "memory_bandwidth_bytes_per_ms": 2000.0,
+      "launch_overhead_ms": 1.0,
+      "busy_power_mw": 2500.0,
+      "idle_power_mw": 200.0,
+      "queue_depth": 2,
+      "batching_beta": 0.2,
+      "batching_tau": 2.0,
+      "thermal_time_constant_ms": 10000.0,
+      "thermal_resistance_c_per_mw": 0.005,
+      "thermal_threshold_c": 40.0,
+      "thermal_gamma": 0.05,
+      "contention_domain": "dram"
+    },
+    {
+      "resource_id": "gpu0",
+      "resource_type": "gpu",
+      "supported_op_classes": ["gemm", "attn", "conv", "elem"],
+      "service_rates": {
+        "gemm": 600.0,
+        "attn": 250.0,
+        "conv": 500.0,
+        "elem": 350.0
+      },
+      "memory_bandwidth_bytes_per_ms": 4500.0,
+      "launch_overhead_ms": 1.5,
+      "busy_power_mw": 2000.0,
+      "idle_power_mw": 180.0,
+      "queue_depth": 2,
+      "batching_beta": 0.4,
+      "batching_tau": 3.0,
+      "thermal_time_constant_ms": 9000.0,
+      "thermal_resistance_c_per_mw": 0.004,
+      "thermal_threshold_c": 41.0,
+      "thermal_gamma": 0.08,
+      "contention_domain": "dram"
+    },
+    {
+      "resource_id": "npu0",
+      "resource_type": "npu",
+      "supported_op_classes": ["gemm", "attn", "conv", "elem"],
+      "service_rates": {
+        "gemm": 1200.0,
+        "attn": 700.0,
+        "conv": 900.0,
+        "elem": 400.0
+      },
+      "memory_bandwidth_bytes_per_ms": 5500.0,
+      "launch_overhead_ms": 2.0,
+      "busy_power_mw": 1700.0,
+      "idle_power_mw": 160.0,
+      "queue_depth": 1,
+      "batching_beta": 0.6,
+      "batching_tau": 4.0,
+      "thermal_time_constant_ms": 8000.0,
+      "thermal_resistance_c_per_mw": 0.004,
+      "thermal_threshold_c": 42.0,
+      "thermal_gamma": 0.1,
+      "contention_domain": "dram"
+    }
+  ],
+  "transfer_bandwidth_bytes_per_ms": [
+    {"src": "cpu0", "dst": "gpu0", "value": 1500.0},
+    {"src": "gpu0", "dst": "cpu0", "value": 1500.0},
+    {"src": "cpu0", "dst": "npu0", "value": 1200.0},
+    {"src": "npu0", "dst": "cpu0", "value": 1200.0},
+    {"src": "gpu0", "dst": "npu0", "value": 1100.0},
+    {"src": "npu0", "dst": "gpu0", "value": 1100.0}
+  ],
+  "transfer_fixed_overhead_ms": [
+    {"src": "cpu0", "dst": "gpu0", "value": 0.5},
+    {"src": "gpu0", "dst": "cpu0", "value": 0.5},
+    {"src": "cpu0", "dst": "npu0", "value": 0.5},
+    {"src": "npu0", "dst": "cpu0", "value": 0.5},
+    {"src": "gpu0", "dst": "npu0", "value": 0.75},
+    {"src": "npu0", "dst": "gpu0", "value": 0.75}
+  ],
+  "transfer_layout_overhead_ms": [
+    {"src": "cpu0", "dst": "gpu0", "value": 0.25},
+    {"src": "gpu0", "dst": "cpu0", "value": 0.25},
+    {"src": "cpu0", "dst": "npu0", "value": 0.25},
+    {"src": "npu0", "dst": "cpu0", "value": 0.25},
+    {"src": "gpu0", "dst": "npu0", "value": 0.3},
+    {"src": "npu0", "dst": "gpu0", "value": 0.3}
+  ],
+  "contention_sensitivities": [
+    {"src": "cpu0", "dst": "gpu0", "value": 0.1},
+    {"src": "cpu0", "dst": "npu0", "value": 0.15},
+    {"src": "gpu0", "dst": "cpu0", "value": 0.12},
+    {"src": "gpu0", "dst": "npu0", "value": 0.1},
+    {"src": "npu0", "dst": "cpu0", "value": 0.2},
+    {"src": "npu0", "dst": "gpu0", "value": 0.15}
+  ]
+}

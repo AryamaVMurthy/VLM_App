@@ -74,6 +74,29 @@ class GenerateGraphPilotCandidatePlansTest(unittest.TestCase):
         self.assertEqual(weights.alpha, 2.0)
         self.assertEqual(weights.beta, 1.0)
 
+    def test_resolve_simulation_calibration_includes_backend_surrogates(self):
+        calibration = self.module.resolve_simulation_calibration(
+            "workflow_a_voice_only",
+            {
+                "global_orchestration_overhead_ms": 25.0,
+                "thermal_scale_by_workflow": {
+                    "workflow_a_voice_only": {"warm_latency_scale": 1.2}
+                },
+                "backend_thermal_factors_by_workflow": {
+                    "workflow_a_voice_only": {"cpu": 1.2}
+                },
+                "backend_utilizations_by_workflow": {
+                    "workflow_a_voice_only": {"cpu": 1.0}
+                },
+            },
+        )
+
+        self.assertIsNotNone(calibration)
+        self.assertEqual(calibration.orchestration_overhead_ms, 25.0)
+        self.assertEqual(calibration.workflow_thermal_scale, 1.2)
+        self.assertEqual(calibration.backend_thermal_factors["cpu"], 1.2)
+        self.assertEqual(calibration.backend_utilizations["cpu"], 1.0)
+
     def test_main_emits_objective_aware_predicted_costs(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

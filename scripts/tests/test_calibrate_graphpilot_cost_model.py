@@ -28,8 +28,20 @@ class CalibrateGraphPilotCostModelTest(unittest.TestCase):
                 json.dumps(
                     {
                         "actual_workflows": {
-                            "workflow_a_voice_only": {"warm_latency_ms": 1000},
-                            "workflow_b_voice_vision": {"warm_latency_ms": 2000},
+                            "workflow_a_voice_only": {
+                                "warm_latency_ms": 1000,
+                                "stage_backends": {
+                                    "asr.primary": "cpu",
+                                    "planner.primary": "cpu",
+                                },
+                            },
+                            "workflow_b_voice_vision": {
+                                "warm_latency_ms": 2000,
+                                "stage_backends": {
+                                    "asr.primary": "cpu",
+                                    "vlm.fastvlm.primary": "npu",
+                                },
+                            },
                         },
                         "comparisons": [
                             {
@@ -79,7 +91,43 @@ class CalibrateGraphPilotCostModelTest(unittest.TestCase):
             self.assertEqual(len(summaries), 1)
             payload = json.loads(summaries[0].read_text(encoding="utf-8"))
             self.assertIn("orchestration_overhead_ms", payload)
+            self.assertIn("residual_bias_ms", payload)
             self.assertIn("thermal_scale_by_workflow", payload)
+            self.assertIn("backend_thermal_factors_by_workflow", payload)
+            self.assertIn("backend_utilizations_by_workflow", payload)
+            self.assertEqual(payload["backend_thermal_factors_by_workflow"]["workflow_a_voice_only"]["cpu"], 1.1)
+            self.assertEqual(payload["backend_utilizations_by_workflow"]["workflow_a_voice_only"]["cpu"], 1.0)
+
+    def test_negative_delta_becomes_residual_bias_not_negative_overhead(self) -> None:
+        payload = self.module.calibrate(
+            experiment_summary={
+                "actual_workflows": {
+                    "workflow_a_voice_only": {
+                        "stage_backends": {"asr.primary": "cpu"}
+                    }
+                },
+                "comparisons": [
+                    {
+                        "workflow_id": "workflow_a_voice_only",
+                        "actual_warm_latency_ms": 900,
+                        "candidate_predicted_makespan_ms": 1000,
+                        "latency_delta_ms": -100,
+                    }
+                ],
+            },
+            sustained_summary={
+                "workflow_summary": {
+                    "workflow_a_voice_only": {
+                        "warm_latency_ms": {"first": 1000.0, "last": 1000.0},
+                        "thermal": {"cpu_c": {"first": 35.0, "last": 35.0}, "skin_c": {"first": 33.0, "last": 33.0}},
+                    }
+                }
+            },
+        )
+
+        self.assertEqual(payload["orchestration_overhead_ms"]["workflow_a_voice_only"], 0.0)
+        self.assertEqual(payload["global_orchestration_overhead_ms"], 0.0)
+        self.assertEqual(payload["residual_bias_ms"]["workflow_a_voice_only"], -100.0)
 
 
 if __name__ == "__main__":
