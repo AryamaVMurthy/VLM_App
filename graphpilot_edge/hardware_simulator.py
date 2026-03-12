@@ -170,6 +170,16 @@ class HardwareSimulator:
     def backend_label(self, resource_id: str) -> str:
         return self._require_resource(resource_id).resource_type
 
+    def resource_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(self._resources))
+
+    def resources_for_backend(self, backend: str) -> tuple[str, ...]:
+        return tuple(
+            resource_id
+            for resource_id, resource in sorted(self._resources.items())
+            if resource.resource_type == backend
+        )
+
     def predict_task(
         self,
         *,
