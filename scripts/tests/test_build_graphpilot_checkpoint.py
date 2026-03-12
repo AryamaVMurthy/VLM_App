@@ -37,6 +37,7 @@ class BuildGraphPilotCheckpointTest(unittest.TestCase):
                 "tuning_summary",
                 "characterization_summary",
                 "memory_admission_summary",
+                "artifact_pack_summary",
             ):
                 path = root / f"{name}.json"
                 path.write_text(json.dumps({"name": name}), encoding="utf-8")
@@ -90,6 +91,8 @@ class BuildGraphPilotCheckpointTest(unittest.TestCase):
                     str(paths["characterization_summary"]),
                     "--memory-admission-summary",
                     str(paths["memory_admission_summary"]),
+                    "--artifact-pack-summary",
+                    str(paths["artifact_pack_summary"]),
                     "--truth-source-pdf",
                     str(truth_pdf),
                     "--open-beads-json",
@@ -109,6 +112,10 @@ class BuildGraphPilotCheckpointTest(unittest.TestCase):
             self.assertEqual(payload["canonical_evidence_paths"]["experiment_summary"], str(paths["experiment_summary"].resolve()))
             self.assertEqual(payload["canonical_evidence_paths"]["baseline_registry"], str(paths["baseline_registry"].resolve()))
             self.assertEqual(payload["canonical_evidence_paths"]["workload_registry"], str(paths["workload_registry"].resolve()))
+            self.assertEqual(
+                payload["canonical_evidence_paths"]["artifact_pack_summary"],
+                str(paths["artifact_pack_summary"].resolve()),
+            )
             self.assertEqual([item["id"] for item in payload["open_beads"]], ["fvlm-i6n.11", "fvlm-i6n.12"])
             self.assertEqual([item["id"] for item in payload["closed_beads"]], ["fvlm-i6n.1"])
 

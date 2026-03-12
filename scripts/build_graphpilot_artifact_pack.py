@@ -1208,6 +1208,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tuning-summary", type=Path, default=None)
     parser.add_argument("--characterization-summary", type=Path, default=None)
     parser.add_argument("--memory-admission-summary", type=Path, default=None)
+    parser.add_argument("--cases-paper-summary", type=Path, default=None)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     return parser.parse_args(argv)
 
@@ -1275,6 +1276,7 @@ def main(argv: list[str] | None = None) -> int:
         DEFAULT_ANALYSIS_ROOT, "graphpilot_memory_admission"
     )
     memory_admission_summary = load_optional_json(memory_admission_summary_path)
+    cases_paper_summary = load_optional_json(args.cases_paper_summary)
     repeat_stats = build_repeat_stats(profiler_registry)
     retrieval_ablation = build_workflow_c_retrieval_ablation(profiler_registry)
     stream_summary = build_stream_scheduling_summary(candidate_plans)
@@ -1379,6 +1381,7 @@ def main(argv: list[str] | None = None) -> int:
         "tuning_summary": str(tuning_summary_path.resolve()) if tuning_summary_path else None,
         "characterization_summary": str(characterization_summary_path.resolve()) if characterization_summary_path else None,
         "memory_admission_summary": str(memory_admission_summary_path.resolve()) if memory_admission_summary_path else None,
+        "cases_paper_summary": str(args.cases_paper_summary.resolve()) if args.cases_paper_summary else None,
         "backend_matrix": str(args.backend_matrix.resolve()),
         "profiler_registry": str(args.profiler_registry.resolve()),
         "candidate_plans": str(args.candidate_plans.resolve()),
@@ -1407,6 +1410,7 @@ def main(argv: list[str] | None = None) -> int:
         "tuning_summary_inline": tuning_summary,
         "characterization_summary_inline": characterization_summary,
         "memory_admission_summary_inline": memory_admission_summary,
+        "cases_paper_summary_inline": cases_paper_summary,
         "sustained_summary_inline": sustained_summary,
     }
     write_json(pack_dir / "summary.json", payload)

@@ -126,6 +126,7 @@ def build_checkpoint_manifest(args: argparse.Namespace) -> dict[str, Any]:
         "tuning_summary": None,
         "characterization_summary": None,
         "memory_admission_summary": None,
+        "artifact_pack_summary": args.artifact_pack_summary.resolve() if args.artifact_pack_summary else None,
     }
     sustained = args.sustained_summary or latest_sustained_summary(experiment_registry)
     if sustained is not None:
@@ -211,6 +212,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tuning-summary", type=Path, default=None)
     parser.add_argument("--characterization-summary", type=Path, default=None)
     parser.add_argument("--memory-admission-summary", type=Path, default=None)
+    parser.add_argument("--artifact-pack-summary", type=Path, default=None)
     parser.add_argument("--truth-source-pdf", type=Path, default=DEFAULT_TRUTH_SOURCE_PDF)
     parser.add_argument("--open-beads-json", type=Path, default=None)
     parser.add_argument("--closed-beads-json", type=Path, default=None)

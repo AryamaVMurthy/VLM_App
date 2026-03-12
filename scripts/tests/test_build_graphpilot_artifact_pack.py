@@ -499,6 +499,77 @@ class BuildGraphPilotArtifactPackTest(unittest.TestCase):
             self.assertIn("Missing required baseline IDs", audit_text)
             self.assertIn("PARTIAL", audit_text)
 
+    def test_main_records_cases_paper_summary_when_provided(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            backend = root / "backend.json"
+            profiler = root / "profiler.json"
+            plans = root / "plans.json"
+            baseline_registry = root / "baseline_registry.json"
+            workload_registry = root / "workload_registry.json"
+            experiments = root / "experiments.json"
+            plot_registry = root / "plots.json"
+            state = root / "state.json"
+            experiment_summary = root / "batch_summary.json"
+            cases_paper_summary = root / "cases_paper_summary.json"
+            output_root = root / "out"
+
+            backend.write_text(json.dumps({"stages": []}), encoding="utf-8")
+            profiler.write_text(json.dumps({"entries": []}), encoding="utf-8")
+            plans.write_text(json.dumps({"plans": []}), encoding="utf-8")
+            baseline_registry.write_text(json.dumps({"baseline_ids": list(self.module.DEFAULT_REQUIRED_BASELINES)}), encoding="utf-8")
+            workload_registry.write_text(json.dumps({"workloads": []}), encoding="utf-8")
+            experiments.write_text(json.dumps({"experiments": []}), encoding="utf-8")
+            plot_registry.write_text(json.dumps({"plots": []}), encoding="utf-8")
+            state.write_text(json.dumps({"current_phase": "Phase 9"}), encoding="utf-8")
+            experiment_summary.write_text(
+                json.dumps(
+                    {
+                        "actual_workflows": {},
+                        "candidate_workflows": {},
+                        "comparisons": [],
+                        "blocked_workflows": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            cases_paper_summary.write_text(
+                json.dumps({"paper_dir": str(root / "paper_dir"), "paper_pdf": str(root / "paper.pdf")}),
+                encoding="utf-8",
+            )
+
+            rc = self.module.main(
+                [
+                    "--backend-matrix",
+                    str(backend),
+                    "--profiler-registry",
+                    str(profiler),
+                    "--candidate-plans",
+                    str(plans),
+                    "--baseline-registry",
+                    str(baseline_registry),
+                    "--workload-registry",
+                    str(workload_registry),
+                    "--experiment-registry",
+                    str(experiments),
+                    "--plot-registry",
+                    str(plot_registry),
+                    "--state-ledger",
+                    str(state),
+                    "--experiment-summary",
+                    str(experiment_summary),
+                    "--cases-paper-summary",
+                    str(cases_paper_summary),
+                    "--output-root",
+                    str(output_root),
+                ]
+            )
+
+            self.assertEqual(rc, 0)
+            pack_summary = next(output_root.glob("artifact_pack_*/summary.json"))
+            payload = json.loads(pack_summary.read_text(encoding="utf-8"))
+            self.assertEqual(payload["cases_paper_summary"], str(cases_paper_summary.resolve()))
+
 
 if __name__ == "__main__":
     unittest.main()
