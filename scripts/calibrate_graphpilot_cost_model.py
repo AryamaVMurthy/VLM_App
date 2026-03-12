@@ -74,10 +74,11 @@ def _checkpoint_paths(path: Path | None) -> dict[str, Path]:
 
 def _build_stage_observations(profiler_registry: dict[str, Any]) -> tuple[dict[tuple[str, str], dict[str, Any]], dict[str, list[dict[str, Any]]]]:
     stage_backend_observations: dict[tuple[str, str], dict[str, Any]] = {}
-    workflow_stage_observations: dict[str, list[dict[str, Any]]] = {}
+    latest_workflow_stage_observations: dict[tuple[str, str, str], dict[str, Any]] = {}
     for entry in profiler_registry.get("entries", []):
         stage_id = str(entry.get("stage_id") or "")
         backend = str(entry.get("backend") or "")
+        recorded_at = str(entry.get("recorded_at") or "")
         metrics = entry.get("metrics") or {}
         if not stage_id or not backend or not isinstance(metrics, dict):
             continue
@@ -86,13 +87,15 @@ def _build_stage_observations(profiler_registry: dict[str, Any]) -> tuple[dict[t
                 observed_backend = (metrics.get("stage_backends") or {}).get(observed_stage_id)
                 if observed_backend is None:
                     continue
-                workflow_stage_observations.setdefault(observed_stage_id, []).append(
-                    {
+                key = (stage_id, str(observed_stage_id), str(observed_backend))
+                current = latest_workflow_stage_observations.get(key)
+                if current is None or recorded_at >= current["recorded_at"]:
+                    latest_workflow_stage_observations[key] = {
+                        "recorded_at": recorded_at,
                         "workflow_id": stage_id,
                         "backend": str(observed_backend),
                         "timing_ms": float(timing_ms),
                     }
-                )
             continue
         if backend == "mixed":
             continue
@@ -122,6 +125,15 @@ def _build_stage_observations(profiler_registry: dict[str, Any]) -> tuple[dict[t
         bucket["launch_overhead_ms"].append(max(0.0, cold_latency - warm_latency))
         if metrics.get("hidden_fallback_status") not in (None, "none", "support_safe"):
             bucket["hidden_fallback_count"] += 1
+    workflow_stage_observations: dict[str, list[dict[str, Any]]] = {}
+    for (_workflow_id, observed_stage_id, _backend), sample in latest_workflow_stage_observations.items():
+        workflow_stage_observations.setdefault(observed_stage_id, []).append(
+            {
+                "workflow_id": sample["workflow_id"],
+                "backend": sample["backend"],
+                "timing_ms": sample["timing_ms"],
+            }
+        )
     return stage_backend_observations, workflow_stage_observations
 
 
@@ -235,7 +247,8 @@ def calibrate(
         skin = (workflow.get("thermal") or {}).get("skin_c") or {}
         first = warm.get("first")
         last = warm.get("last")
-        scale = (last / first) if first not in (None, 0) and last is not None else None
+        raw_scale = (last / first) if first not in (None, 0) and last is not None else None
+        scale = max(1.0, raw_scale) if raw_scale is not None else None
         thermal_scale_by_workflow[workflow_id] = {
             "warm_latency_scale": scale,
             "cpu_temp_drift_c": cpu.get("drift"),

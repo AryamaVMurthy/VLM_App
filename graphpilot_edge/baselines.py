@@ -137,6 +137,85 @@ def build_baseline_candidate(
         )
         current_temp_c = hot_state
         workflow = effective_scenario.workflow
+    elif baseline_id == "band_like":
+        effective_scenario = _scenario_with_full_edges(
+            effective_scenario,
+            suffix=baseline_id,
+        )
+        assignment = _stage_greedy_assignment(
+            effective_scenario,
+            simulator=simulator,
+            batch_size=batch_size,
+            current_temp_c=current_temp_c,
+            utilizations=utilizations,
+        )
+        workflow = effective_scenario.workflow
+    elif baseline_id == "adms_like":
+        effective_scenario = _scenario_with_full_edges(
+            effective_scenario,
+            suffix=baseline_id,
+        )
+        assignment = _energy_aware_assignment(
+            effective_scenario,
+            simulator=simulator,
+            batch_size=batch_size,
+            current_temp_c=current_temp_c,
+            utilizations=utilizations,
+        )
+        workflow = effective_scenario.workflow
+    elif baseline_id == "puzzle_like":
+        effective_scenario = _scenario_with_full_edges(
+            effective_scenario,
+            suffix=baseline_id,
+        )
+        assignment = _static_best_map_assignment(
+            effective_scenario,
+            simulator=simulator,
+            batch_size=batch_size,
+            current_temp_c=current_temp_c,
+            utilizations=utilizations,
+        )
+        workflow = effective_scenario.workflow
+    elif baseline_id == "twill_like":
+        effective_scenario = _scenario_scaled_for_ablation(
+            effective_scenario,
+            baseline_id="no_memory_kv",
+        )
+        assignment = _static_best_map_assignment(
+            effective_scenario,
+            simulator=simulator,
+            batch_size=batch_size,
+            current_temp_c=current_temp_c,
+            utilizations=utilizations,
+        )
+        workflow = effective_scenario.workflow
+    elif baseline_id == "heteroinfer_like":
+        assignment = _heteroinfer_like_assignment(
+            effective_scenario,
+            simulator=simulator,
+            batch_size=batch_size,
+            current_temp_c=current_temp_c,
+            utilizations=utilizations,
+        )
+        workflow = effective_scenario.workflow
+    elif baseline_id == "agent_xpu_like":
+        assignment = _agent_xpu_like_assignment(
+            effective_scenario,
+            simulator=simulator,
+            batch_size=batch_size,
+            current_temp_c=current_temp_c,
+            utilizations=utilizations,
+        )
+        workflow = effective_scenario.workflow
+    elif baseline_id == "hero_like":
+        assignment = _hero_like_assignment(
+            effective_scenario,
+            simulator=simulator,
+            batch_size=batch_size,
+            current_temp_c=current_temp_c,
+            utilizations=utilizations,
+        )
+        workflow = effective_scenario.workflow
     else:
         raise ValueError(f"Unsupported baseline_id '{baseline_id}'.")
 
@@ -166,6 +245,26 @@ def _hot_current_temperatures(simulator: HardwareSimulator) -> dict[str, float]:
         resource_id: simulator.resource(resource_id).thermal_threshold_c + 6.0
         for resource_id in simulator.resource_ids()
     }
+
+
+def _scenario_with_full_edges(
+    scenario: ModelGraphScenario,
+    *,
+    suffix: str,
+) -> ModelGraphScenario:
+    return ModelGraphScenario(
+        scenario_id=f"{scenario.scenario_id}.{suffix}",
+        workflow=WorkflowDag(
+            workflow_id=f"{scenario.workflow.workflow_id}.{suffix}",
+            stage_ids=scenario.workflow.stage_ids,
+            edges=tuple(
+                WorkflowEdge(edge.source_stage_id, edge.target_stage_id, "full")
+                for edge in scenario.workflow.edges
+            ),
+            chunk_sizes=scenario.workflow.chunk_sizes,
+        ),
+        node_profiles=scenario.node_profiles,
+    )
 
 
 def _scenario_scaled_for_ablation(
@@ -228,6 +327,203 @@ def _scaled_task_profile(task: TaskProfile, *, op_scale: float, memory_scale: fl
     )
 
 
+def _energy_aware_assignment(
+    scenario: ModelGraphScenario,
+    *,
+    simulator: HardwareSimulator,
+    batch_size: int,
+    current_temp_c: Mapping[str, float],
+    utilizations: Mapping[str, float],
+) -> dict[str, str]:
+    assignment: dict[str, str] = {}
+    for stage_id in scenario.workflow.topological_order():
+        node = scenario.node_profiles[stage_id]
+        feasible = _feasible_resources_for_stage(
+            node,
+            simulator=simulator,
+            batch_size=batch_size,
+            current_temp_c=current_temp_c,
+            utilizations=utilizations,
+        )
+        if not feasible:
+            raise ValueError(f"Stage '{stage_id}' has no support-safe resource.")
+        assignment[stage_id] = min(
+            feasible,
+            key=lambda item: (
+                _energy_biased_cost_ms(simulator=simulator, prediction=item[1]),
+                item[1].execution_time_ms,
+                simulator.backend_label(item[0]),
+                item[0],
+            ),
+        )[0]
+    return assignment
+
+
+def _heteroinfer_like_assignment(
+    scenario: ModelGraphScenario,
+    *,
+    simulator: HardwareSimulator,
+    batch_size: int,
+    current_temp_c: Mapping[str, float],
+    utilizations: Mapping[str, float],
+) -> dict[str, str]:
+    assignment: dict[str, str] = {}
+    for stage_id in scenario.workflow.topological_order():
+        node = scenario.node_profiles[stage_id]
+        if _is_llm_prompt_or_postprocess(stage_id):
+            assignment[stage_id] = _prefer_backend_if_feasible(
+                node,
+                simulator=simulator,
+                batch_size=batch_size,
+                current_temp_c=current_temp_c,
+                utilizations=utilizations,
+                backend_order=("cpu", "gpu", "npu"),
+            )
+            continue
+        if _is_llm_prefill_or_decode(stage_id, node):
+            assignment[stage_id] = _prefer_backend_if_feasible(
+                node,
+                simulator=simulator,
+                batch_size=batch_size,
+                current_temp_c=current_temp_c,
+                utilizations=utilizations,
+                backend_order=("npu", "gpu", "cpu"),
+            )
+            continue
+        if stage_id == "vlm.fastvlm.primary":
+            assignment[stage_id] = _prefer_backend_if_feasible(
+                node,
+                simulator=simulator,
+                batch_size=batch_size,
+                current_temp_c=current_temp_c,
+                utilizations=utilizations,
+                backend_order=("npu", "gpu", "cpu"),
+            )
+            continue
+        assignment[stage_id] = _stage_default_support_safe_resource(
+            stage_id=stage_id,
+            node=node,
+            simulator=simulator,
+            batch_size=batch_size,
+            current_temp_c=current_temp_c,
+            utilizations=utilizations,
+        )
+    return assignment
+
+
+def _agent_xpu_like_assignment(
+    scenario: ModelGraphScenario,
+    *,
+    simulator: HardwareSimulator,
+    batch_size: int,
+    current_temp_c: Mapping[str, float],
+    utilizations: Mapping[str, float],
+) -> dict[str, str]:
+    assignment: dict[str, str] = {}
+    for stage_id in scenario.workflow.topological_order():
+        node = scenario.node_profiles[stage_id]
+        if stage_id == "vlm.fastvlm.primary":
+            assignment[stage_id] = _prefer_backend_if_feasible(
+                node,
+                simulator=simulator,
+                batch_size=batch_size,
+                current_temp_c=current_temp_c,
+                utilizations=utilizations,
+                backend_order=("npu", "gpu", "cpu"),
+            )
+            continue
+        if stage_id == "retrieval.embedder.primary":
+            assignment[stage_id] = _prefer_backend_if_feasible(
+                node,
+                simulator=simulator,
+                batch_size=batch_size,
+                current_temp_c=current_temp_c,
+                utilizations=utilizations,
+                backend_order=("cpu", "gpu", "npu"),
+            )
+            continue
+        if _is_llm_prefill_or_decode(stage_id, node):
+            assignment[stage_id] = _prefer_backend_if_feasible(
+                node,
+                simulator=simulator,
+                batch_size=batch_size,
+                current_temp_c=current_temp_c,
+                utilizations=utilizations,
+                backend_order=("npu", "gpu", "cpu"),
+            )
+            continue
+        if stage_id.startswith(("asr.", "planner.", "tts.")):
+            assignment[stage_id] = _cpu_if_close_enough(
+                node,
+                simulator=simulator,
+                batch_size=batch_size,
+                current_temp_c=current_temp_c,
+                utilizations=utilizations,
+                threshold=1.35,
+            )
+            continue
+        assignment[stage_id] = _best_resource_for_stage(
+            node,
+            simulator=simulator,
+            batch_size=batch_size,
+            current_temp_c=current_temp_c,
+            utilizations=utilizations,
+        )[0]
+    return assignment
+
+
+def _hero_like_assignment(
+    scenario: ModelGraphScenario,
+    *,
+    simulator: HardwareSimulator,
+    batch_size: int,
+    current_temp_c: Mapping[str, float],
+    utilizations: Mapping[str, float],
+) -> dict[str, str]:
+    assignment: dict[str, str] = {}
+    for stage_id in scenario.workflow.topological_order():
+        node = scenario.node_profiles[stage_id]
+        if stage_id == "retrieval.embedder.primary":
+            assignment[stage_id] = _prefer_backend_if_feasible(
+                node,
+                simulator=simulator,
+                batch_size=batch_size,
+                current_temp_c=current_temp_c,
+                utilizations=utilizations,
+                backend_order=("cpu", "gpu", "npu"),
+            )
+            continue
+        if stage_id == "vlm.fastvlm.primary":
+            assignment[stage_id] = _prefer_backend_if_feasible(
+                node,
+                simulator=simulator,
+                batch_size=batch_size,
+                current_temp_c=current_temp_c,
+                utilizations=utilizations,
+                backend_order=("npu", "gpu", "cpu"),
+            )
+            continue
+        if _is_llm_prefill_or_decode(stage_id, node):
+            assignment[stage_id] = _prefer_backend_if_feasible(
+                node,
+                simulator=simulator,
+                batch_size=batch_size,
+                current_temp_c=current_temp_c,
+                utilizations=utilizations,
+                backend_order=("npu", "gpu", "cpu"),
+            )
+            continue
+        assignment[stage_id] = _stage_default_support_safe_resource(
+            stage_id=stage_id,
+            node=node,
+            simulator=simulator,
+            batch_size=batch_size,
+            current_temp_c=current_temp_c,
+            utilizations=utilizations,
+        )
+    return assignment
+
+
 def _single_backend_assignment(
     scenario: ModelGraphScenario,
     *,
@@ -262,6 +558,153 @@ def _single_backend_assignment(
             )
         assignment[stage_id] = resource_id
     return assignment
+
+
+def _prefer_backend_if_feasible(
+    node,
+    *,
+    simulator: HardwareSimulator,
+    batch_size: int,
+    current_temp_c: Mapping[str, float],
+    utilizations: Mapping[str, float],
+    backend_order: tuple[str, ...],
+) -> str:
+    feasible = _feasible_resources_for_stage(
+        node,
+        simulator=simulator,
+        batch_size=batch_size,
+        current_temp_c=current_temp_c,
+        utilizations=utilizations,
+    )
+    if not feasible:
+        raise ValueError(f"Stage '{node.stage_id}' has no support-safe resource.")
+    for backend in backend_order:
+        backend_matches = [
+            item
+            for item in feasible
+            if simulator.backend_label(item[0]) == backend
+        ]
+        if backend_matches:
+            return min(
+                backend_matches,
+                key=lambda item: (
+                    item[1].execution_time_ms,
+                    item[0],
+                ),
+            )[0]
+    return min(
+        feasible,
+        key=lambda item: (
+            item[1].execution_time_ms,
+            simulator.backend_label(item[0]),
+            item[0],
+        ),
+    )[0]
+
+
+def _cpu_if_close_enough(
+    node,
+    *,
+    simulator: HardwareSimulator,
+    batch_size: int,
+    current_temp_c: Mapping[str, float],
+    utilizations: Mapping[str, float],
+    threshold: float,
+) -> str:
+    feasible = _feasible_resources_for_stage(
+        node,
+        simulator=simulator,
+        batch_size=batch_size,
+        current_temp_c=current_temp_c,
+        utilizations=utilizations,
+    )
+    if not feasible:
+        raise ValueError(f"Stage '{node.stage_id}' has no support-safe resource.")
+    best_resource_id, best_prediction = min(
+        feasible,
+        key=lambda item: (
+            item[1].execution_time_ms,
+            simulator.backend_label(item[0]),
+            item[0],
+        ),
+    )
+    cpu_matches = [
+        item
+        for item in feasible
+        if simulator.backend_label(item[0]) == "cpu"
+    ]
+    if cpu_matches:
+        cpu_resource_id, cpu_prediction = min(
+            cpu_matches,
+            key=lambda item: (
+                item[1].execution_time_ms,
+                item[0],
+            ),
+        )
+        if cpu_prediction.execution_time_ms <= best_prediction.execution_time_ms * threshold:
+            return cpu_resource_id
+    return best_resource_id
+
+
+def _stage_default_support_safe_resource(
+    *,
+    stage_id: str,
+    node,
+    simulator: HardwareSimulator,
+    batch_size: int,
+    current_temp_c: Mapping[str, float],
+    utilizations: Mapping[str, float],
+) -> str:
+    if stage_id.startswith(("asr.", "planner.", "tts.", "retrieval.")):
+        return _prefer_backend_if_feasible(
+            node,
+            simulator=simulator,
+            batch_size=batch_size,
+            current_temp_c=current_temp_c,
+            utilizations=utilizations,
+            backend_order=("cpu", "gpu", "npu"),
+        )
+    if stage_id == "vlm.fastvlm.primary":
+        return _prefer_backend_if_feasible(
+            node,
+            simulator=simulator,
+            batch_size=batch_size,
+            current_temp_c=current_temp_c,
+            utilizations=utilizations,
+            backend_order=("npu", "gpu", "cpu"),
+        )
+    return _best_resource_for_stage(
+        node,
+        simulator=simulator,
+        batch_size=batch_size,
+        current_temp_c=current_temp_c,
+        utilizations=utilizations,
+    )[0]
+
+
+def _is_llm_prompt_or_postprocess(stage_id: str) -> bool:
+    return stage_id.endswith(("prompt_assembly", "postprocess"))
+
+
+def _is_llm_prefill_or_decode(stage_id: str, node) -> bool:
+    return (
+        stage_id.endswith(("prefill", "decode"))
+        or stage_id.startswith(("planner.", "responder."))
+        or node.family == "llm"
+    )
+
+
+def _energy_biased_cost_ms(
+    *,
+    simulator: HardwareSimulator,
+    prediction: HardwarePrediction,
+) -> float:
+    resource = simulator.resource(prediction.resource_id)
+    return (
+        prediction.execution_time_ms
+        + prediction.energy_mj * 0.5
+        + resource.launch_overhead_ms * 2.0
+    )
 
 
 def _current_deployed_assignment(

@@ -32,6 +32,7 @@ from graphpilot_edge.model_graph_simulator import (  # noqa: E402
     build_tts_scenario,
     build_vlm_scenario,
 )
+from graphpilot_edge.models import RequestSpec  # noqa: E402
 from graphpilot_edge.simulation import simulate_candidate_plan, simulate_request_stream  # noqa: E402
 from graphpilot_edge.workload_universe import (  # noqa: E402
     DEFAULT_WORKLOAD_UNIVERSE_PATH,
@@ -55,6 +56,13 @@ DEFAULT_BASELINES = (
     "no_memory_kv",
     "no_knob_tuning",
     "no_thermal_adaptation",
+    "band_like",
+    "adms_like",
+    "puzzle_like",
+    "twill_like",
+    "heteroinfer_like",
+    "agent_xpu_like",
+    "hero_like",
 )
 MEBIBYTE = 1024 * 1024
 
@@ -104,7 +112,7 @@ def _non_continuous_specs(universe: WorkloadUniverse) -> list[Any]:
     return [
         spec
         for spec in universe.specs.values()
-        if spec.category != "continuous_stream"
+        if spec.category not in {"continuous_stream", "mixed_criticality_stream"}
     ]
 
 
@@ -179,13 +187,13 @@ def build_backend_affinity(universe: WorkloadUniverse, simulator) -> dict[str, A
 
 
 def _simulate_baseline(universe: WorkloadUniverse, spec, baseline_id: str, simulator, capacities) -> dict[str, Any]:
-    scenario = universe.build_scenario(spec.base_workload_id or spec.workload_id)
-    candidate = build_baseline_candidate(
-        scenario,
-        simulator=simulator,
-        baseline_id=baseline_id,
-    )
     if spec.category == "continuous_stream":
+        scenario = universe.build_scenario(spec.base_workload_id or spec.workload_id)
+        candidate = build_baseline_candidate(
+            scenario,
+            simulator=simulator,
+            baseline_id=baseline_id,
+        )
         requests = universe.build_request_specs(
             spec.workload_id,
             simulator=simulator,
@@ -202,6 +210,57 @@ def _simulate_baseline(universe: WorkloadUniverse, spec, baseline_id: str, simul
             "ttfs_ms": simulation.p95_ttfs_ms,
             "resource_assignment": dict(candidate.resource_assignment),
         }
+    if spec.category == "mixed_criticality_stream":
+        resource_assignments: dict[str, dict[str, str]] = {}
+        requests: list[RequestSpec] = []
+        for group in spec.request_groups:
+            base_workload_id = str(group["base_workload_id"])
+            assignment = resource_assignments.get(base_workload_id)
+            if assignment is None:
+                scenario = universe.build_scenario(base_workload_id)
+                candidate = build_baseline_candidate(
+                    scenario,
+                    simulator=simulator,
+                    baseline_id=baseline_id,
+                )
+                assignment = dict(candidate.resource_assignment)
+                resource_assignments[base_workload_id] = assignment
+            scenario = universe.build_scenario(base_workload_id)
+            plan = scenario.instantiate_candidate_plan(
+                simulator=simulator,
+                resource_assignment=assignment,
+            )
+            deadline_ms = group.get("deadline_ms", spec.deadline_ms)
+            criticality_class = str(group.get("criticality_class", "default"))
+            for request_index, arrival_ms in enumerate(group.get("arrivals_ms", ())):
+                requests.append(
+                    RequestSpec(
+                        request_id=f"{spec.workload_id}:{base_workload_id}:request_{request_index}",
+                        arrival_ms=int(arrival_ms),
+                        workflow=scenario.workflow,
+                        plan=plan,
+                        deadline_ms=int(deadline_ms) if deadline_ms is not None else None,
+                        criticality_class=criticality_class,
+                        source_workload_id=base_workload_id,
+                    )
+                )
+        simulation = simulate_request_stream(tuple(requests), capacities)
+        return {
+            "baseline_id": baseline_id,
+            "status": "ok",
+            "score_ms": float(simulation.makespan_ms),
+            "makespan_ms": simulation.makespan_ms,
+            "p95_queue_delay_ms": simulation.p95_queue_delay_ms,
+            "deadline_miss_rate": simulation.deadline_miss_rate,
+            "ttfs_ms": simulation.p95_ttfs_ms,
+            "resource_assignment": resource_assignments,
+        }
+    scenario = universe.build_scenario(spec.base_workload_id or spec.workload_id)
+    candidate = build_baseline_candidate(
+        scenario,
+        simulator=simulator,
+        baseline_id=baseline_id,
+    )
     simulation = simulate_candidate_plan(scenario.workflow, candidate.plan, capacities)
     return {
         "baseline_id": baseline_id,
@@ -228,6 +287,7 @@ def build_baseline_comparisons(universe: WorkloadUniverse, simulator) -> dict[st
             "model_family": "model_family_workloads",
             "compound_assistant": "compound_workloads",
             "continuous_stream": "continuous_workloads",
+            "mixed_criticality_stream": "continuous_workloads",
             "stress_failure": "stress_workloads",
             "primitive_operator": "model_family_workloads",
         }.get(spec.category)

@@ -126,6 +126,32 @@ class WorkloadUniverseTest(unittest.TestCase):
         self.assertIn("continuous_stream", categories)
         self.assertIn("stress_failure", categories)
 
+    def test_default_universe_covers_revision_report_workload_families(self):
+        self.assertIn("model.vlm.document_qa", self.universe.specs)
+        self.assertIn("model.vlm.chart_qa", self.universe.specs)
+        self.assertIn("model.vlm.mmmu_reasoning", self.universe.specs)
+        self.assertIn("model.llm.mobile_actions_planner", self.universe.specs)
+        self.assertIn("compound.workflow_a.mobile_actions", self.universe.specs)
+        self.assertIn("compound.workflow_b.document_qa", self.universe.specs)
+        self.assertIn("compound.workflow_b.chart_qa", self.universe.specs)
+        self.assertIn("compound.workflow_b.mmmu_reasoning", self.universe.specs)
+        self.assertIn("compound.workflow_c.high_recall_rag", self.universe.specs)
+        self.assertIn("model.glue.tool_call_marshal", self.universe.specs)
+        self.assertIn("model.glue.retrieval_chunk_pack", self.universe.specs)
+        self.assertIn("continuous.workflow_b.poisson", self.universe.specs)
+        self.assertIn("continuous.workflow_c.poisson_heavy", self.universe.specs)
+        self.assertIn("stress.workflow_b.high_visual_tokens", self.universe.specs)
+
+        datasets = {
+            dataset
+            for spec in self.universe.specs.values()
+            for dataset in spec.datasets
+        }
+        self.assertIn("MMMU", datasets)
+        self.assertIn("DocVQA", datasets)
+        self.assertIn("ChartQA", datasets)
+        self.assertIn("MobileActions", datasets)
+
     def test_compound_workflow_c_scenario_preserves_parallel_branches_and_stream_edges(self):
         scenario = self.universe.build_scenario("compound.workflow_c.default")
 
@@ -164,6 +190,56 @@ class WorkloadUniverseTest(unittest.TestCase):
         self.assertEqual([request.arrival_ms for request in requests], [0, 1500, 3000, 4500])
         self.assertTrue(all(request.deadline_ms == 12000 for request in requests))
         self.assertTrue(all(request.plan.workflow_id == "compound.workflow_a.default" for request in requests))
+
+    def test_new_multimodal_and_rag_workloads_build(self):
+        scenario = self.universe.build_scenario("compound.workflow_b.document_qa")
+        self.assertIn("vlm.fastvlm.primary", scenario.workflow.stage_ids)
+        self.assertEqual(
+            scenario.node_profiles["vlm.fastvlm.primary"].knob_values["image_resolution"],
+            1024,
+        )
+
+        rag_scenario = self.universe.build_scenario("compound.workflow_c.high_recall_rag")
+        self.assertTrue(
+            rag_scenario.workflow.has_edge(
+                "planner.primary",
+                "retrieval.embedder.primary",
+                "full",
+            )
+        )
+        self.assertEqual(
+            rag_scenario.node_profiles["retrieval.embedder.primary"].knob_values["top_k"],
+            8,
+        )
+
+    def test_mixed_criticality_stream_builds_requests_from_multiple_base_workloads(self):
+        requests = self.universe.build_request_specs(
+            "continuous.mixed_foreground_background",
+            simulator=self.simulator,
+            resource_assignment={
+                "asr.primary": "cpu0",
+                "planner.primary": "cpu0",
+                "responder.primary": "cpu0",
+                "tts.primary": "cpu0",
+                "vlm.fastvlm.primary": "npu0",
+                "retrieval.embedder.primary": "cpu0",
+                "glue.tokenize": "cpu0",
+                "glue.validate": "cpu0",
+                "glue.pack": "cpu0",
+            },
+        )
+
+        self.assertEqual(len(requests), 6)
+        self.assertEqual(
+            [request.source_workload_id for request in requests[:3]],
+            ["compound.workflow_c.high_recall_rag"] * 3,
+        )
+        self.assertEqual(
+            [request.source_workload_id for request in requests[3:]],
+            ["model.glue.retrieval_chunk_pack"] * 3,
+        )
+        self.assertEqual(requests[0].criticality_class, "foreground")
+        self.assertEqual(requests[-1].criticality_class, "background")
 
     def test_stress_workload_carries_quality_speed_knobs_into_scenario(self):
         scenario = self.universe.build_scenario("stress.workflow_c.long_context")

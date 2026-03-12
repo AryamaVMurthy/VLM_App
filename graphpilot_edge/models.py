@@ -100,6 +100,8 @@ class RequestSpec:
     workflow: "WorkflowDag"
     plan: CandidatePlan
     deadline_ms: int | None = None
+    criticality_class: str = "default"
+    source_workload_id: str | None = None
 
 
 @dataclass(frozen=True)

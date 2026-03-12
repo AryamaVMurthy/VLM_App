@@ -35,6 +35,13 @@ DEFAULT_REQUIRED_BASELINES = (
     "no_memory_kv",
     "no_knob_tuning",
     "no_thermal_adaptation",
+    "band_like",
+    "adms_like",
+    "puzzle_like",
+    "twill_like",
+    "heteroinfer_like",
+    "agent_xpu_like",
+    "hero_like",
 )
 
 

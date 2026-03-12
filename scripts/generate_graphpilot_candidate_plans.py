@@ -153,10 +153,14 @@ def resolve_simulation_calibration(
         for backend, payload in backend_rows.items():
             family_latency_scales[(str(family), str(backend))] = float(payload.get("latency_scale", 1.0))
             family_residual_bias_ms[(str(family), str(backend))] = float(payload.get("residual_bias_ms", 0.0))
+    orchestration_overhead_ms = float(
+        (calibration_summary.get("orchestration_overhead_ms") or {}).get(
+            workflow_id,
+            calibration_summary.get("global_orchestration_overhead_ms", 0.0),
+        )
+    )
     return SimulationCalibration(
-        orchestration_overhead_ms=float(
-            calibration_summary.get("global_orchestration_overhead_ms", 0.0)
-        ),
+        orchestration_overhead_ms=orchestration_overhead_ms,
         workflow_thermal_scale=float(workflow_thermal.get("warm_latency_scale") or 1.0),
         backend_thermal_factors={
             str(backend): float(value) for backend, value in backend_thermal_factors.items()

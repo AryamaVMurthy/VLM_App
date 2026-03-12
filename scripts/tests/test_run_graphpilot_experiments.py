@@ -18,6 +18,16 @@ class RunGraphPilotExperimentsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.module = load_module()
 
+    def test_default_rerun_profiles_use_graphpilot_support_safe_workflows_only(self) -> None:
+        self.assertEqual(
+            self.module.DEFAULT_RERUN_PROFILES,
+            (
+                "graphpilot_workflow_a",
+                "graphpilot_workflow_b",
+                "graphpilot_workflow_c",
+            ),
+        )
+
     def test_summarize_results_marks_blocked_workflow_c(self) -> None:
         profiler_registry = {
             "entries": [

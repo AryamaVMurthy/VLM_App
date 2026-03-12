@@ -71,9 +71,10 @@ def build_registry(workload_universe_path: Path) -> dict[str, Any]:
             "base_workload_id": spec.base_workload_id,
             "arrivals_ms": list(spec.arrivals_ms),
             "deadline_ms": spec.deadline_ms,
+            "request_groups": [dict(group) for group in spec.request_groups],
             "params": dict(spec.params),
         }
-        if spec.category != "continuous_stream":
+        if spec.category not in {"continuous_stream", "mixed_criticality_stream"}:
             entry["scenario"] = scenario_to_dict(universe.build_scenario(spec.workload_id))
         workloads.append(entry)
     return {

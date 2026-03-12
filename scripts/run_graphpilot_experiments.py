@@ -21,7 +21,6 @@ DEFAULT_BACKEND_MATRIX = ARTIFACT_ROOT / "registries" / "backend_feasibility_mat
 DEFAULT_EXPERIMENT_REGISTRY = ARTIFACT_ROOT / "registries" / "experiment_registry.json"
 DEFAULT_OUTPUT_ROOT = ARTIFACT_ROOT / "experiments"
 DEFAULT_RERUN_PROFILES = (
-    "workflow_a_voice_only",
     "graphpilot_workflow_a",
     "graphpilot_workflow_b",
     "graphpilot_workflow_c",

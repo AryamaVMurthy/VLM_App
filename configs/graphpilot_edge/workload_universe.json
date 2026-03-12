@@ -7,8 +7,14 @@
       "category": "primitive_operator",
       "builder": "primitive_operator",
       "description": "Synthetic GEMM-heavy primitive workload for backend-affinity characterization.",
-      "datasets": ["synthetic_gemm"],
-      "tags": ["primitive", "characterization", "gemm"],
+      "datasets": [
+        "synthetic_gemm"
+      ],
+      "tags": [
+        "primitive",
+        "characterization",
+        "gemm"
+      ],
       "params": {
         "op_class": "gemm",
         "op_volume": 120000.0,
@@ -21,8 +27,14 @@
       "category": "primitive_operator",
       "builder": "primitive_operator",
       "description": "Synthetic attention-heavy primitive workload for prefill/decode affinity studies.",
-      "datasets": ["synthetic_attention"],
-      "tags": ["primitive", "characterization", "attention"],
+      "datasets": [
+        "synthetic_attention"
+      ],
+      "tags": [
+        "primitive",
+        "characterization",
+        "attention"
+      ],
       "params": {
         "op_class": "attn",
         "op_volume": 72000.0,
@@ -35,8 +47,14 @@
       "category": "model_family",
       "builder": "llm",
       "description": "Short prompt and long answer LLM workload with explicit prefill/decode split.",
-      "datasets": ["synthetic_llm_short_long"],
-      "tags": ["llm", "prefill_decode", "model_family"],
+      "datasets": [
+        "synthetic_llm_short_long"
+      ],
+      "tags": [
+        "llm",
+        "prefill_decode",
+        "model_family"
+      ],
       "params": {
         "prompt_tokens": 256,
         "output_tokens": 128,
@@ -49,8 +67,15 @@
       "category": "model_family",
       "builder": "vlm",
       "description": "Vision-language model workload for image reasoning and visual-token budget studies.",
-      "datasets": ["GQA", "COCO"],
-      "tags": ["vlm", "model_family", "visual_reasoning"],
+      "datasets": [
+        "GQA",
+        "COCO"
+      ],
+      "tags": [
+        "vlm",
+        "model_family",
+        "visual_reasoning"
+      ],
       "params": {
         "prompt_tokens": 96,
         "output_tokens": 48,
@@ -63,8 +88,15 @@
       "category": "model_family",
       "builder": "stt",
       "description": "Streaming STT workload for chunk-size and beam-size characterization.",
-      "datasets": ["LibriSpeech", "SLURP"],
-      "tags": ["stt", "model_family", "streaming"],
+      "datasets": [
+        "LibriSpeech",
+        "SLURP"
+      ],
+      "tags": [
+        "stt",
+        "model_family",
+        "streaming"
+      ],
       "params": {
         "audio_duration_ms": 3200,
         "chunk_size_ms": 800,
@@ -76,8 +108,15 @@
       "category": "model_family",
       "builder": "tts",
       "description": "Streaming TTS workload for first-audio and chunk-size studies.",
-      "datasets": ["LJSpeech", "VCTK"],
-      "tags": ["tts", "model_family", "streaming"],
+      "datasets": [
+        "LJSpeech",
+        "VCTK"
+      ],
+      "tags": [
+        "tts",
+        "model_family",
+        "streaming"
+      ],
       "params": {
         "text_tokens": 96,
         "chunk_size_chars": 80,
@@ -89,8 +128,14 @@
       "category": "model_family",
       "builder": "retrieval",
       "description": "Embedding plus ANN retrieval workload for top-k and reranker studies.",
-      "datasets": ["BEIR"],
-      "tags": ["retrieval", "ann", "model_family"],
+      "datasets": [
+        "BEIR"
+      ],
+      "tags": [
+        "retrieval",
+        "ann",
+        "model_family"
+      ],
       "params": {
         "query_tokens": 32,
         "corpus_size": 1000,
@@ -103,8 +148,14 @@
       "category": "model_family",
       "builder": "cnn",
       "description": "CNN classification workload for conv-heavy accelerator characterization.",
-      "datasets": ["ImageNet"],
-      "tags": ["cnn", "model_family", "classification"],
+      "datasets": [
+        "ImageNet"
+      ],
+      "tags": [
+        "cnn",
+        "model_family",
+        "classification"
+      ],
       "params": {
         "image_resolution": 512
       }
@@ -114,8 +165,14 @@
       "category": "model_family",
       "builder": "vit",
       "description": "ViT classification workload for token-heavy vision characterization.",
-      "datasets": ["ImageNet"],
-      "tags": ["vit", "model_family", "classification"],
+      "datasets": [
+        "ImageNet"
+      ],
+      "tags": [
+        "vit",
+        "model_family",
+        "classification"
+      ],
       "params": {
         "image_resolution": 448,
         "token_budget": 256
@@ -126,8 +183,14 @@
       "category": "model_family",
       "builder": "sequential_glue",
       "description": "Sequential glue workload for tokenizer/packing/control-path studies.",
-      "datasets": ["synthetic_glue"],
-      "tags": ["glue", "model_family", "sequential"],
+      "datasets": [
+        "synthetic_glue"
+      ],
+      "tags": [
+        "glue",
+        "model_family",
+        "sequential"
+      ],
       "params": {
         "item_count": 256
       }
@@ -137,8 +200,15 @@
       "category": "compound_assistant",
       "builder": "assistant_workflow",
       "description": "Voice-only assistant DAG preserving support-safe workflow A structure.",
-      "datasets": ["SLURP", "LibriSpeech"],
-      "tags": ["assistant", "workflow_a", "compound"],
+      "datasets": [
+        "SLURP",
+        "LibriSpeech"
+      ],
+      "tags": [
+        "assistant",
+        "workflow_a",
+        "compound"
+      ],
       "params": {
         "workflow_id": "workflow_a_voice_only",
         "audio_duration_ms": 3200,
@@ -155,8 +225,17 @@
       "category": "compound_assistant",
       "builder": "assistant_workflow",
       "description": "Voice+vision assistant DAG preserving support-safe workflow B structure.",
-      "datasets": ["GQA", "COCO", "SLURP"],
-      "tags": ["assistant", "workflow_b", "compound", "vision"],
+      "datasets": [
+        "GQA",
+        "COCO",
+        "SLURP"
+      ],
+      "tags": [
+        "assistant",
+        "workflow_b",
+        "compound",
+        "vision"
+      ],
       "params": {
         "workflow_id": "workflow_b_voice_vision",
         "audio_duration_ms": 3200,
@@ -175,8 +254,18 @@
       "category": "compound_assistant",
       "builder": "assistant_workflow",
       "description": "Voice+vision+retrieval assistant DAG preserving support-safe workflow C structure.",
-      "datasets": ["GQA", "COCO", "BEIR", "SLURP"],
-      "tags": ["assistant", "workflow_c", "compound", "retrieval"],
+      "datasets": [
+        "GQA",
+        "COCO",
+        "BEIR",
+        "SLURP"
+      ],
+      "tags": [
+        "assistant",
+        "workflow_c",
+        "compound",
+        "retrieval"
+      ],
       "params": {
         "workflow_id": "workflow_c_voice_vision_retrieval",
         "audio_duration_ms": 3200,
@@ -197,20 +286,44 @@
       "workload_id": "continuous.workflow_a.poisson",
       "category": "continuous_stream",
       "description": "Voice-only foreground request stream used for queue-delay and miss-rate studies.",
-      "datasets": ["SLURP"],
-      "tags": ["continuous", "workflow_a", "foreground"],
+      "datasets": [
+        "SLURP"
+      ],
+      "tags": [
+        "continuous",
+        "workflow_a",
+        "foreground"
+      ],
       "base_workload_id": "compound.workflow_a.default",
-      "arrivals_ms": [0, 1500, 3000, 4500],
+      "arrivals_ms": [
+        0,
+        1500,
+        3000,
+        4500
+      ],
       "deadline_ms": 12000
     },
     {
       "workload_id": "continuous.workflow_c.burst",
       "category": "continuous_stream",
       "description": "Bursty workflow C stream for overlap, queueing, and contention studies.",
-      "datasets": ["GQA", "BEIR", "SLURP"],
-      "tags": ["continuous", "workflow_c", "burst"],
+      "datasets": [
+        "GQA",
+        "BEIR",
+        "SLURP"
+      ],
+      "tags": [
+        "continuous",
+        "workflow_c",
+        "burst"
+      ],
       "base_workload_id": "compound.workflow_c.default",
-      "arrivals_ms": [0, 800, 1400, 3200],
+      "arrivals_ms": [
+        0,
+        800,
+        1400,
+        3200
+      ],
       "deadline_ms": 18000
     },
     {
@@ -218,8 +331,17 @@
       "category": "stress_failure",
       "builder": "assistant_workflow",
       "description": "Long-context workflow C stress case for KV pressure, memory admission, and degradation behavior.",
-      "datasets": ["GQA", "BEIR", "SLURP"],
-      "tags": ["stress", "workflow_c", "kv_pressure", "memory"],
+      "datasets": [
+        "GQA",
+        "BEIR",
+        "SLURP"
+      ],
+      "tags": [
+        "stress",
+        "workflow_c",
+        "kv_pressure",
+        "memory"
+      ],
       "params": {
         "workflow_id": "workflow_c_voice_vision_retrieval",
         "audio_duration_ms": 5000,
@@ -241,6 +363,732 @@
         "tts_chunk_size_chars": 96,
         "tts_quality_mode": "high"
       }
+    },
+    {
+      "workload_id": "primitive.conv_heavy.medium",
+      "category": "primitive_operator",
+      "builder": "primitive_operator",
+      "description": "Synthetic convolution-heavy primitive workload for CNN-style accelerator characterization.",
+      "datasets": [
+        "synthetic_conv"
+      ],
+      "tags": [
+        "primitive",
+        "characterization",
+        "conv"
+      ],
+      "params": {
+        "op_class": "conv",
+        "op_volume": 98000.0,
+        "memory_bytes": 18874368,
+        "output_bytes": 6291456
+      }
+    },
+    {
+      "workload_id": "primitive.gather_lookup.medium",
+      "category": "primitive_operator",
+      "builder": "primitive_operator",
+      "description": "Synthetic gather-heavy primitive workload for embedding lookup and KV-access characterization.",
+      "datasets": [
+        "synthetic_gather"
+      ],
+      "tags": [
+        "primitive",
+        "characterization",
+        "gather"
+      ],
+      "params": {
+        "op_class": "gather",
+        "op_volume": 64000.0,
+        "memory_bytes": 8388608,
+        "output_bytes": 1048576
+      }
+    },
+    {
+      "workload_id": "primitive.ann_heavy.medium",
+      "category": "primitive_operator",
+      "builder": "primitive_operator",
+      "description": "Synthetic ANN-search-heavy primitive workload for retrieval accelerator sensitivity studies.",
+      "datasets": [
+        "synthetic_ann"
+      ],
+      "tags": [
+        "primitive",
+        "characterization",
+        "ann"
+      ],
+      "params": {
+        "op_class": "ann",
+        "op_volume": 54000.0,
+        "memory_bytes": 12582912,
+        "output_bytes": 1048576
+      }
+    },
+    {
+      "workload_id": "primitive.audio_frontend.medium",
+      "category": "primitive_operator",
+      "builder": "primitive_operator",
+      "description": "Synthetic audio-frontend primitive workload for STT chunking and launch-overhead characterization.",
+      "datasets": [
+        "synthetic_audio"
+      ],
+      "tags": [
+        "primitive",
+        "characterization",
+        "audio"
+      ],
+      "params": {
+        "op_class": "audio",
+        "op_volume": 42000.0,
+        "memory_bytes": 4194304,
+        "output_bytes": 524288
+      }
+    },
+    {
+      "workload_id": "primitive.control_glue.medium",
+      "category": "primitive_operator",
+      "builder": "primitive_operator",
+      "description": "Synthetic control-heavy primitive workload for sequential glue and scheduler-overhead studies.",
+      "datasets": [
+        "synthetic_control"
+      ],
+      "tags": [
+        "primitive",
+        "characterization",
+        "control"
+      ],
+      "params": {
+        "op_class": "control",
+        "op_volume": 28000.0,
+        "memory_bytes": 1048576,
+        "output_bytes": 262144
+      }
+    },
+    {
+      "workload_id": "model.llm.short_short",
+      "category": "model_family",
+      "builder": "llm",
+      "description": "Short prompt and short answer LLM workload for lightweight planner-style text characterization.",
+      "datasets": [
+        "synthetic_llm_short_short"
+      ],
+      "tags": [
+        "llm",
+        "model_family",
+        "planner_like"
+      ],
+      "params": {
+        "prompt_tokens": 128,
+        "output_tokens": 32,
+        "context_tokens": 64,
+        "max_output_tokens": 32
+      }
+    },
+    {
+      "workload_id": "model.llm.long_short",
+      "category": "model_family",
+      "builder": "llm",
+      "description": "Long prompt and short answer LLM workload for prefill-dominated characterization.",
+      "datasets": [
+        "synthetic_llm_long_short"
+      ],
+      "tags": [
+        "llm",
+        "model_family",
+        "prefill_dominated"
+      ],
+      "params": {
+        "prompt_tokens": 1024,
+        "output_tokens": 48,
+        "context_tokens": 1024,
+        "max_output_tokens": 48
+      }
+    },
+    {
+      "workload_id": "model.llm.long_long",
+      "category": "model_family",
+      "builder": "llm",
+      "description": "Long prompt and long answer LLM workload for combined prefill/decode pressure studies.",
+      "datasets": [
+        "synthetic_llm_long_long"
+      ],
+      "tags": [
+        "llm",
+        "model_family",
+        "long_context",
+        "long_decode"
+      ],
+      "params": {
+        "prompt_tokens": 1024,
+        "output_tokens": 256,
+        "context_tokens": 1536,
+        "max_output_tokens": 256
+      }
+    },
+    {
+      "workload_id": "model.llm.mobile_actions_planner",
+      "category": "model_family",
+      "builder": "llm",
+      "description": "Planner-style tool-routing workload aligned with mobile actions / on-device tool calling.",
+      "datasets": [
+        "MobileActions"
+      ],
+      "tags": [
+        "llm",
+        "model_family",
+        "planner",
+        "tool_calling"
+      ],
+      "params": {
+        "prompt_tokens": 192,
+        "output_tokens": 48,
+        "context_tokens": 96,
+        "max_output_tokens": 48,
+        "variant_id": "functiongemma_planner"
+      }
+    },
+    {
+      "workload_id": "model.vlm.document_qa",
+      "category": "model_family",
+      "builder": "vlm",
+      "description": "Document QA VLM workload for OCR-heavy and layout-sensitive multimodal characterization.",
+      "datasets": [
+        "DocVQA"
+      ],
+      "tags": [
+        "vlm",
+        "model_family",
+        "document_qa"
+      ],
+      "params": {
+        "prompt_tokens": 128,
+        "output_tokens": 64,
+        "image_resolution": 1024,
+        "visual_token_budget": 320
+      }
+    },
+    {
+      "workload_id": "model.vlm.chart_qa",
+      "category": "model_family",
+      "builder": "vlm",
+      "description": "Chart QA VLM workload for token-heavy structured visual reasoning characterization.",
+      "datasets": [
+        "ChartQA"
+      ],
+      "tags": [
+        "vlm",
+        "model_family",
+        "chart_qa"
+      ],
+      "params": {
+        "prompt_tokens": 128,
+        "output_tokens": 64,
+        "image_resolution": 960,
+        "visual_token_budget": 288
+      }
+    },
+    {
+      "workload_id": "model.vlm.mmmu_reasoning",
+      "category": "model_family",
+      "builder": "vlm",
+      "description": "Broad multimodal reasoning workload aligned with MMMU-style expert multimodal questions.",
+      "datasets": [
+        "MMMU"
+      ],
+      "tags": [
+        "vlm",
+        "model_family",
+        "mmmu"
+      ],
+      "params": {
+        "prompt_tokens": 160,
+        "output_tokens": 96,
+        "image_resolution": 1024,
+        "visual_token_budget": 352
+      }
+    },
+    {
+      "workload_id": "model.retrieval.large_kb_rerank",
+      "category": "model_family",
+      "builder": "retrieval",
+      "description": "Large local knowledge-base retrieval workload with reranking enabled.",
+      "datasets": [
+        "BEIR"
+      ],
+      "tags": [
+        "retrieval",
+        "ann",
+        "model_family",
+        "rerank"
+      ],
+      "params": {
+        "query_tokens": 48,
+        "corpus_size": 12000,
+        "top_k": 8,
+        "rerank": true
+      }
+    },
+    {
+      "workload_id": "model.cnn.detection_lite",
+      "category": "model_family",
+      "builder": "cnn",
+      "description": "Conv-heavy CNN detection-lite workload for accelerator sensitivity beyond classification.",
+      "datasets": [
+        "COCO"
+      ],
+      "tags": [
+        "cnn",
+        "model_family",
+        "detection"
+      ],
+      "params": {
+        "image_resolution": 640
+      }
+    },
+    {
+      "workload_id": "model.vit.windowed",
+      "category": "model_family",
+      "builder": "vit",
+      "description": "Windowed ViT workload for token-budget and hierarchical transformer characterization.",
+      "datasets": [
+        "ImageNet"
+      ],
+      "tags": [
+        "vit",
+        "model_family",
+        "windowed"
+      ],
+      "params": {
+        "image_resolution": 512,
+        "token_budget": 384
+      }
+    },
+    {
+      "workload_id": "model.glue.image_preprocess",
+      "category": "model_family",
+      "builder": "sequential_glue",
+      "description": "Sequential glue workload approximating image resize/crop/normalize preprocessing.",
+      "datasets": [
+        "COCO"
+      ],
+      "tags": [
+        "glue",
+        "model_family",
+        "image_preprocess"
+      ],
+      "params": {
+        "item_count": 384,
+        "variant_id": "image_preprocess_glue"
+      }
+    },
+    {
+      "workload_id": "model.glue.audio_resample",
+      "category": "model_family",
+      "builder": "sequential_glue",
+      "description": "Sequential glue workload approximating audio resample/framing preprocessing.",
+      "datasets": [
+        "LibriSpeech"
+      ],
+      "tags": [
+        "glue",
+        "model_family",
+        "audio_preprocess"
+      ],
+      "params": {
+        "item_count": 320,
+        "variant_id": "audio_preprocess_glue"
+      }
+    },
+    {
+      "workload_id": "model.glue.schema_validation",
+      "category": "model_family",
+      "builder": "sequential_glue",
+      "description": "Sequential glue workload for JSON/schema validation and control-path overhead studies.",
+      "datasets": [
+        "synthetic_glue"
+      ],
+      "tags": [
+        "glue",
+        "model_family",
+        "schema_validation"
+      ],
+      "params": {
+        "item_count": 192,
+        "variant_id": "schema_validation_glue"
+      }
+    },
+    {
+      "workload_id": "model.glue.tool_call_marshal",
+      "category": "model_family",
+      "builder": "sequential_glue",
+      "description": "Sequential glue workload for tool-call marshaling and planner output packing.",
+      "datasets": [
+        "MobileActions"
+      ],
+      "tags": [
+        "glue",
+        "model_family",
+        "tool_call"
+      ],
+      "params": {
+        "item_count": 224,
+        "variant_id": "tool_call_glue"
+      }
+    },
+    {
+      "workload_id": "model.glue.retrieval_chunk_pack",
+      "category": "model_family",
+      "builder": "sequential_glue",
+      "description": "Sequential glue workload for retrieval chunk packing and prompt assembly.",
+      "datasets": [
+        "BEIR"
+      ],
+      "tags": [
+        "glue",
+        "model_family",
+        "retrieval_pack"
+      ],
+      "params": {
+        "item_count": 448,
+        "variant_id": "retrieval_pack_glue"
+      }
+    },
+    {
+      "workload_id": "compound.workflow_b.document_qa",
+      "category": "compound_assistant",
+      "builder": "assistant_workflow",
+      "description": "Voice+document assistant DAG for document question answering.",
+      "datasets": [
+        "DocVQA",
+        "SLURP"
+      ],
+      "tags": [
+        "assistant",
+        "workflow_b",
+        "document_qa"
+      ],
+      "params": {
+        "workflow_id": "workflow_b_voice_vision",
+        "audio_duration_ms": 3200,
+        "stt_chunk_size_ms": 800,
+        "planner_prompt_tokens": 112,
+        "planner_output_tokens": 40,
+        "responder_prompt_tokens": 448,
+        "responder_output_tokens": 96,
+        "image_resolution": 1024,
+        "visual_token_budget": 320,
+        "tts_chunk_size_chars": 80
+      }
+    },
+    {
+      "workload_id": "compound.workflow_b.chart_qa",
+      "category": "compound_assistant",
+      "builder": "assistant_workflow",
+      "description": "Voice+chart assistant DAG for chart reasoning.",
+      "datasets": [
+        "ChartQA",
+        "SLURP"
+      ],
+      "tags": [
+        "assistant",
+        "workflow_b",
+        "chart_qa"
+      ],
+      "params": {
+        "workflow_id": "workflow_b_voice_vision",
+        "audio_duration_ms": 3200,
+        "stt_chunk_size_ms": 800,
+        "planner_prompt_tokens": 112,
+        "planner_output_tokens": 40,
+        "responder_prompt_tokens": 448,
+        "responder_output_tokens": 96,
+        "image_resolution": 960,
+        "visual_token_budget": 288,
+        "tts_chunk_size_chars": 80
+      }
+    },
+    {
+      "workload_id": "compound.workflow_b.mmmu_reasoning",
+      "category": "compound_assistant",
+      "builder": "assistant_workflow",
+      "description": "Voice+vision assistant DAG aligned with MMMU-style multimodal reasoning.",
+      "datasets": [
+        "MMMU",
+        "SLURP"
+      ],
+      "tags": [
+        "assistant",
+        "workflow_b",
+        "mmmu"
+      ],
+      "params": {
+        "workflow_id": "workflow_b_voice_vision",
+        "audio_duration_ms": 3600,
+        "stt_chunk_size_ms": 800,
+        "planner_prompt_tokens": 128,
+        "planner_output_tokens": 48,
+        "responder_prompt_tokens": 512,
+        "responder_output_tokens": 112,
+        "image_resolution": 1024,
+        "visual_token_budget": 352,
+        "tts_chunk_size_chars": 88
+      }
+    },
+    {
+      "workload_id": "compound.workflow_a.mobile_actions",
+      "category": "compound_assistant",
+      "builder": "assistant_workflow",
+      "description": "Voice-only assistant DAG aligned with on-device mobile actions planning/tool calling.",
+      "datasets": [
+        "MobileActions",
+        "SLURP"
+      ],
+      "tags": [
+        "assistant",
+        "workflow_a",
+        "tool_calling"
+      ],
+      "params": {
+        "workflow_id": "workflow_a_voice_only",
+        "audio_duration_ms": 2800,
+        "stt_chunk_size_ms": 600,
+        "planner_prompt_tokens": 160,
+        "planner_output_tokens": 48,
+        "responder_prompt_tokens": 320,
+        "responder_output_tokens": 64,
+        "tts_chunk_size_chars": 64
+      }
+    },
+    {
+      "workload_id": "compound.workflow_c.high_recall_rag",
+      "category": "compound_assistant",
+      "builder": "assistant_workflow",
+      "description": "Voice+vision+retrieval assistant DAG with larger retrieval fanout and reranking.",
+      "datasets": [
+        "GQA",
+        "BEIR",
+        "SLURP"
+      ],
+      "tags": [
+        "assistant",
+        "workflow_c",
+        "high_recall_rag"
+      ],
+      "params": {
+        "workflow_id": "workflow_c_voice_vision_retrieval",
+        "audio_duration_ms": 3600,
+        "stt_chunk_size_ms": 800,
+        "planner_prompt_tokens": 112,
+        "planner_output_tokens": 40,
+        "responder_prompt_tokens": 512,
+        "responder_output_tokens": 112,
+        "image_resolution": 896,
+        "visual_token_budget": 256,
+        "retrieval_query_tokens": 48,
+        "retrieval_corpus_size": 12000,
+        "retrieval_top_k": 8,
+        "retrieval_rerank": true,
+        "tts_chunk_size_chars": 88
+      }
+    },
+    {
+      "workload_id": "continuous.workflow_a.ttfs_sensitive",
+      "category": "continuous_stream",
+      "description": "TTFS-sensitive voice-only stream with tighter arrivals and deadlines.",
+      "datasets": [
+        "SLURP"
+      ],
+      "tags": [
+        "continuous",
+        "workflow_a",
+        "ttfs_sensitive"
+      ],
+      "base_workload_id": "compound.workflow_a.mobile_actions",
+      "arrivals_ms": [
+        0,
+        900,
+        1800,
+        2700
+      ],
+      "deadline_ms": 9000
+    },
+    {
+      "workload_id": "continuous.workflow_b.poisson",
+      "category": "continuous_stream",
+      "description": "Voice+vision stream used for queue-delay studies under repeated multimodal arrivals.",
+      "datasets": [
+        "DocVQA",
+        "ChartQA",
+        "SLURP"
+      ],
+      "tags": [
+        "continuous",
+        "workflow_b",
+        "vision"
+      ],
+      "base_workload_id": "compound.workflow_b.document_qa",
+      "arrivals_ms": [
+        0,
+        1800,
+        3600,
+        5400
+      ],
+      "deadline_ms": 22000
+    },
+    {
+      "workload_id": "continuous.workflow_c.poisson_heavy",
+      "category": "continuous_stream",
+      "description": "Voice+vision+retrieval stream with heavier arrivals for contention and queueing studies.",
+      "datasets": [
+        "GQA",
+        "BEIR",
+        "SLURP"
+      ],
+      "tags": [
+        "continuous",
+        "workflow_c",
+        "retrieval",
+        "heavy"
+      ],
+      "base_workload_id": "compound.workflow_c.high_recall_rag",
+      "arrivals_ms": [
+        0,
+        1200,
+        2400,
+        3600
+      ],
+      "deadline_ms": 24000
+    },
+    {
+      "workload_id": "stress.workflow_b.high_visual_tokens",
+      "category": "stress_failure",
+      "builder": "assistant_workflow",
+      "description": "High-visual-token workflow B stress case for visual-budget and TTFS tradeoff studies.",
+      "datasets": [
+        "DocVQA",
+        "MMMU",
+        "SLURP"
+      ],
+      "tags": [
+        "stress",
+        "workflow_b",
+        "visual_budget"
+      ],
+      "params": {
+        "workflow_id": "workflow_b_voice_vision",
+        "audio_duration_ms": 3600,
+        "stt_chunk_size_ms": 800,
+        "planner_prompt_tokens": 128,
+        "planner_output_tokens": 48,
+        "responder_prompt_tokens": 544,
+        "responder_output_tokens": 128,
+        "image_resolution": 1152,
+        "visual_token_budget": 448,
+        "tts_chunk_size_chars": 96,
+        "tts_quality_mode": "high"
+      }
+    },
+    {
+      "workload_id": "stress.workflow_a.small_chunks",
+      "category": "stress_failure",
+      "builder": "assistant_workflow",
+      "description": "Voice-only stress case with small STT chunks for launch-overhead sensitivity.",
+      "datasets": [
+        "SLURP",
+        "LibriSpeech"
+      ],
+      "tags": [
+        "stress",
+        "workflow_a",
+        "small_chunks"
+      ],
+      "params": {
+        "workflow_id": "workflow_a_voice_only",
+        "audio_duration_ms": 3200,
+        "stt_chunk_size_ms": 320,
+        "stt_beam_size": 4,
+        "planner_prompt_tokens": 96,
+        "planner_output_tokens": 32,
+        "responder_prompt_tokens": 320,
+        "responder_output_tokens": 80,
+        "tts_chunk_size_chars": 64
+      }
+    },
+    {
+      "workload_id": "stress.workflow_c.high_recall_rag",
+      "category": "stress_failure",
+      "builder": "assistant_workflow",
+      "description": "High-recall workflow C stress case for retrieval top-k, reranking, and memory pressure.",
+      "datasets": [
+        "BEIR",
+        "GQA",
+        "SLURP"
+      ],
+      "tags": [
+        "stress",
+        "workflow_c",
+        "retrieval",
+        "memory"
+      ],
+      "params": {
+        "workflow_id": "workflow_c_voice_vision_retrieval",
+        "audio_duration_ms": 4200,
+        "stt_chunk_size_ms": 800,
+        "stt_beam_size": 6,
+        "planner_prompt_tokens": 144,
+        "planner_output_tokens": 48,
+        "responder_prompt_tokens": 640,
+        "responder_context_tokens": 3072,
+        "responder_output_tokens": 160,
+        "responder_context_cap": 3072,
+        "responder_max_output_tokens": 160,
+        "image_resolution": 1024,
+        "visual_token_budget": 384,
+        "retrieval_query_tokens": 64,
+        "retrieval_corpus_size": 16000,
+        "retrieval_top_k": 10,
+        "retrieval_rerank": true,
+        "tts_chunk_size_chars": 96,
+        "tts_quality_mode": "high"
+      }
+    },
+    {
+      "workload_id": "continuous.mixed_foreground_background",
+      "category": "mixed_criticality_stream",
+      "description": "Mixed-criticality stream combining foreground workflow-C assistant requests with background retrieval-packing maintenance work.",
+      "datasets": [
+        "BEIR",
+        "GQA",
+        "SLURP"
+      ],
+      "tags": [
+        "continuous",
+        "mixed_criticality",
+        "foreground",
+        "background"
+      ],
+      "request_groups": [
+        {
+          "base_workload_id": "compound.workflow_c.high_recall_rag",
+          "arrivals_ms": [
+            0,
+            1600,
+            3200
+          ],
+          "deadline_ms": 22000,
+          "criticality_class": "foreground"
+        },
+        {
+          "base_workload_id": "model.glue.retrieval_chunk_pack",
+          "arrivals_ms": [
+            4000,
+            5200,
+            6400
+          ],
+          "deadline_ms": 12000,
+          "criticality_class": "background"
+        }
+      ]
     }
   ]
 }

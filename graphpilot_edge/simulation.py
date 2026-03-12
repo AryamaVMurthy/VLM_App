@@ -104,19 +104,32 @@ def _calibrated_execution_ms(
     thermal_factor = calibration.backend_thermal_factors.get(
         option.backend, calibration.workflow_thermal_scale
     )
-    contention_factor = compute_contention_factor(
+    base_contention_factor = compute_contention_factor(
         backend=option.backend,
         sensitivities=calibration.contention_sensitivities,
         utilizations=calibration.backend_utilizations,
-    ) * calibration.backend_contention_scales.get(option.backend, 1.0)
-    latency_scale = calibration.stage_latency_scales.get(
-        (stage_id, option.backend),
-        calibration.family_latency_scales.get((family, option.backend), 1.0),
     )
-    residual_bias_ms = calibration.stage_residual_bias_ms.get(
-        (stage_id, option.backend),
-        calibration.family_residual_bias_ms.get((family, option.backend), 0.0),
-    )
+    if any(target_backend == option.backend for target_backend, _other in calibration.contention_sensitivities):
+        contention_factor = (
+            base_contention_factor
+            * calibration.backend_contention_scales.get(option.backend, 1.0)
+        )
+    else:
+        contention_factor = base_contention_factor
+    stage_key = (stage_id, option.backend)
+    family_key = (family, option.backend)
+    if stage_key in calibration.stage_latency_scales:
+        latency_scale = calibration.stage_latency_scales[stage_key]
+        residual_bias_ms = 0.0
+    elif family_key in calibration.family_latency_scales:
+        latency_scale = calibration.family_latency_scales[family_key]
+        residual_bias_ms = 0.0
+    else:
+        latency_scale = 1.0
+        residual_bias_ms = calibration.stage_residual_bias_ms.get(
+            stage_key,
+            calibration.family_residual_bias_ms.get(family_key, 0.0),
+        )
     launch_overhead_ms = calibration.backend_launch_overheads_ms.get(option.backend, 0.0)
     exec_ms = compute_execution_time_ms(
         base_latency_ms=float(option.latency_ms) * latency_scale,

@@ -364,7 +364,10 @@ def parse_graphpilot_metrics(logcat: str) -> dict[str, Any]:
         r"memory_effective_required_bytes=(?P<memory_required>\d+)\s+"
         r"stage_backends=(?P<stage_backends>\S+)\s+"
         r"stage_timings_ms=(?P<stage_timings>\S+)\s+"
-        r"total_ms=(?P<total>\d+)\s+ttft_ms=(?P<ttft>-?\d+)\s+"
+        r"total_ms=(?P<total>\d+)\s+"
+        r"(?:planner_first_partial_ms=(?P<planner_first_partial>-?\d+)\s+)?"
+        r"(?:asr_chunk_count=(?P<asr_chunk_count>\d+)\s+)?"
+        r"ttft_ms=(?P<ttft>-?\d+)\s+"
         r"tts_first_chunk_queued_ms=(?P<tts_first_chunk_queued>-?\d+)\s+"
         r"tts_first_audio_ms=(?P<tts_first_audio>-?\d+)\s+"
         r"vlm_prefill_ms=(?P<vlm_prefill>\d+)\s+vlm_decode_ms=(?P<vlm_decode>\d+)",
@@ -385,6 +388,8 @@ def parse_graphpilot_metrics(logcat: str) -> dict[str, Any]:
     ttft_ms = int(match.group("ttft"))
     tts_first_chunk_queued_ms = int(match.group("tts_first_chunk_queued"))
     tts_first_audio_ms = int(match.group("tts_first_audio"))
+    planner_first_partial = match.group("planner_first_partial")
+    asr_chunk_count = match.group("asr_chunk_count")
     return {
         "workflow_id": match.group("workflow"),
         "plan_id": match.group("plan_id"),
@@ -405,6 +410,12 @@ def parse_graphpilot_metrics(logcat: str) -> dict[str, Any]:
         "energy_mj_or_power_proxy": None,
         "thermal_bin": "unknown",
         "hidden_fallback_status": "no_hidden_fallback_observed",
+        "planner_first_partial_ms": None
+        if planner_first_partial in (None, "")
+        else int(planner_first_partial),
+        "asr_chunk_count": None
+        if asr_chunk_count in (None, "")
+        else int(asr_chunk_count),
         "ttft_ms": None if ttft_ms < 0 else ttft_ms,
         "tts_first_chunk_queued_ms": None
         if tts_first_chunk_queued_ms < 0

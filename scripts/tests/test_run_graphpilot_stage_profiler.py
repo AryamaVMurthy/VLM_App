@@ -62,12 +62,14 @@ class RunGraphPilotStageProfilerTest(unittest.TestCase):
             "memory_decision=ADMIT memory_effective_required_bytes=111149056 "
             "stage_backends=asr.primary:cpu,planner.primary:cpu,vlm.fastvlm.primary:cpu,responder.primary:cpu,tts.primary:cpu "
             "stage_timings_ms=asr.primary:310,planner.primary:512,vlm.fastvlm.primary:4021,responder.primary:750,tts.primary:5200 "
-            "total_ms=11200 ttft_ms=3585 tts_first_chunk_queued_ms=8800 "
+            "total_ms=11200 planner_first_partial_ms=444 asr_chunk_count=2 ttft_ms=3585 tts_first_chunk_queued_ms=8800 "
             "tts_first_audio_ms=8931 vlm_prefill_ms=480 vlm_decode_ms=1500"
         )
         self.assertEqual(metrics["workflow_id"], "workflow_b_voice_vision")
         self.assertEqual(metrics["plan_id"], "cool:workflow_b_voice_vision:test")
         self.assertEqual(metrics["state_id"], "cool")
+        self.assertEqual(metrics["planner_first_partial_ms"], 444)
+        self.assertEqual(metrics["asr_chunk_count"], 2)
         self.assertEqual(metrics["ttft_ms"], 3585)
         self.assertEqual(metrics["tts_first_chunk_queued_ms"], 8800)
         self.assertEqual(metrics["stage_timings_ms"]["tts.primary"], 5200)

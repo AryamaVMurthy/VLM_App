@@ -18,6 +18,8 @@ from graphpilot_edge.hardware_topology import (  # noqa: E402
     DEFAULT_HARDWARE_TOPOLOGY_PATH,
     load_hardware_topology,
 )
+from graphpilot_edge.models import RequestSpec  # noqa: E402
+from graphpilot_edge.simulation import simulate_request_stream  # noqa: E402
 from graphpilot_edge.workload_universe import (  # noqa: E402
     DEFAULT_WORKLOAD_UNIVERSE_PATH,
     load_workload_universe,
@@ -36,6 +38,13 @@ DEFAULT_BASELINES = (
     "no_memory_kv",
     "no_knob_tuning",
     "no_thermal_adaptation",
+    "band_like",
+    "adms_like",
+    "puzzle_like",
+    "twill_like",
+    "heteroinfer_like",
+    "agent_xpu_like",
+    "hero_like",
 )
 
 
@@ -58,12 +67,63 @@ def build_registry(
 ) -> dict[str, object]:
     universe = load_workload_universe(workload_universe_path)
     topology = load_hardware_topology(hardware_topology_path)
+    capacities: dict[str, int] = {}
+    for resource_id in topology.simulator.resource_ids():
+        backend = topology.simulator.backend_label(resource_id)
+        capacities[backend] = capacities.get(backend, 0) + 1
     workloads = []
     for workload_id in workload_ids:
-        scenario = universe.build_scenario(workload_id)
+        spec = universe.specs[workload_id]
         baseline_rows = []
         for baseline_id in baseline_ids:
             try:
+                if spec.category == "mixed_criticality_stream":
+                    resource_assignments: dict[str, dict[str, str]] = {}
+                    requests: list[RequestSpec] = []
+                    for group in spec.request_groups:
+                        base_workload_id = str(group["base_workload_id"])
+                        scenario = universe.build_scenario(base_workload_id)
+                        assignment = resource_assignments.get(base_workload_id)
+                        if assignment is None:
+                            candidate = build_baseline_candidate(
+                                scenario,
+                                simulator=topology.simulator,
+                                baseline_id=baseline_id,
+                            )
+                            assignment = dict(candidate.resource_assignment)
+                            resource_assignments[base_workload_id] = assignment
+                        plan = scenario.instantiate_candidate_plan(
+                            simulator=topology.simulator,
+                            resource_assignment=assignment,
+                        )
+                        deadline_ms = group.get("deadline_ms", spec.deadline_ms)
+                        criticality_class = str(group.get("criticality_class", "default"))
+                        for request_index, arrival_ms in enumerate(group.get("arrivals_ms", ())):
+                            requests.append(
+                                RequestSpec(
+                                    request_id=f"{workload_id}:{base_workload_id}:request_{request_index}",
+                                    arrival_ms=int(arrival_ms),
+                                    workflow=scenario.workflow,
+                                    plan=plan,
+                                    deadline_ms=int(deadline_ms) if deadline_ms is not None else None,
+                                    criticality_class=criticality_class,
+                                    source_workload_id=base_workload_id,
+                                )
+                            )
+                    simulation = simulate_request_stream(tuple(requests), capacities)
+                    baseline_rows.append(
+                        {
+                            "baseline_id": baseline_id,
+                            "status": "ok",
+                            "workflow_id": workload_id,
+                            "plan_id": f"{baseline_id}:{workload_id}",
+                            "score_ms": simulation.makespan_ms,
+                            "resource_assignment": resource_assignments,
+                            "stage_backends": {},
+                        }
+                    )
+                    continue
+                scenario = universe.build_scenario(workload_id)
                 candidate = build_baseline_candidate(
                     scenario,
                     simulator=topology.simulator,
@@ -94,7 +154,7 @@ def build_registry(
         workloads.append(
             {
                 "workload_id": workload_id,
-                "scenario_id": scenario.scenario_id,
+                "scenario_id": None if spec.category == "mixed_criticality_stream" else universe.build_scenario(workload_id).scenario_id,
                 "baselines": baseline_rows,
             }
         )

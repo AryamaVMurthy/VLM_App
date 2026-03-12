@@ -43,10 +43,21 @@ class RunGraphPilotCharacterizationTest(unittest.TestCase):
         self.assertIn("no_memory_kv", baseline_ids)
         self.assertIn("no_knob_tuning", baseline_ids)
         self.assertIn("no_thermal_adaptation", baseline_ids)
+        self.assertIn("band_like", baseline_ids)
+        self.assertIn("adms_like", baseline_ids)
+        self.assertIn("puzzle_like", baseline_ids)
+        self.assertIn("twill_like", baseline_ids)
+        self.assertIn("heteroinfer_like", baseline_ids)
+        self.assertIn("agent_xpu_like", baseline_ids)
+        self.assertIn("hero_like", baseline_ids)
 
         pipeline_rows = summary["ablations"]["pipeline"]
         self.assertTrue(
             any(row["workload_id"] == "compound.workflow_a.default" for row in pipeline_rows)
+        )
+        continuous = summary["baseline_comparisons"]["continuous_workloads"]
+        self.assertTrue(
+            any(row["workload_id"] == "continuous.mixed_foreground_background" for row in continuous)
         )
 
     def test_build_characterization_summary_includes_calibration_quality(self) -> None:

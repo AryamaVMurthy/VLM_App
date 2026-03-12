@@ -255,6 +255,118 @@ class CalibrateGraphPilotCostModelTest(unittest.TestCase):
             self.assertIn("cpu", payload["family_backend_calibration"]["asr"])
             self.assertIn("cpu", payload["stage_backend_calibration"]["asr.primary"])
 
+    def test_stage_backend_calibration_uses_latest_workflow_stage_timing(self) -> None:
+        payload = self.module.calibrate(
+            experiment_summary={
+                "actual_workflows": {
+                    "workflow_a_voice_only": {
+                        "warm_latency_ms": 900,
+                        "stage_backends": {"asr.primary": "cpu"},
+                    }
+                },
+                "comparisons": [
+                    {
+                        "workflow_id": "workflow_a_voice_only",
+                        "actual_warm_latency_ms": 900,
+                        "candidate_predicted_makespan_ms": 850,
+                        "latency_delta_ms": 50,
+                    }
+                ],
+            },
+            sustained_summary={
+                "workflow_summary": {
+                    "workflow_a_voice_only": {
+                        "warm_latency_ms": {"first": 900.0, "last": 920.0},
+                        "thermal": {
+                            "cpu_c": {"first": 35.0, "last": 36.0},
+                            "skin_c": {"first": 33.0, "last": 33.5},
+                        },
+                    }
+                }
+            },
+            profiler_registry={
+                "entries": [
+                    {
+                        "stage_id": "asr.primary",
+                        "backend": "cpu",
+                        "variant": "whisper_stt",
+                        "metrics": {
+                            "warm_latency_ms": 100.0,
+                            "cold_latency_ms": 120.0,
+                            "prefill_latency_ms": 0.0,
+                            "decode_latency_ms": 100.0,
+                            "transfer_time_ms": 1.0,
+                            "peak_memory_bytes": 1024.0,
+                        },
+                    },
+                    {
+                        "stage_id": "workflow_a_voice_only",
+                        "backend": "mixed",
+                        "variant": "graphpilot_cpu_stack",
+                        "recorded_at": "2026-03-12T10:00:00+00:00",
+                        "metrics": {
+                            "stage_backends": {"asr.primary": "cpu"},
+                            "stage_timings_ms": {"asr.primary": 220.0},
+                        },
+                    },
+                    {
+                        "stage_id": "workflow_a_voice_only",
+                        "backend": "mixed",
+                        "variant": "graphpilot_cpu_stack",
+                        "recorded_at": "2026-03-12T11:00:00+00:00",
+                        "metrics": {
+                            "stage_backends": {"asr.primary": "cpu"},
+                            "stage_timings_ms": {"asr.primary": 150.0},
+                        },
+                    },
+                ]
+            },
+        )
+
+        self.assertEqual(
+            payload["stage_backend_calibration"]["asr.primary"]["cpu"]["actual_stage_timing_ms"],
+            150.0,
+        )
+
+    def test_thermal_surrogate_never_speeds_up_backends_below_one(self) -> None:
+        payload = self.module.calibrate(
+            experiment_summary={
+                "actual_workflows": {
+                    "workflow_b_voice_vision": {
+                        "warm_latency_ms": 16000,
+                        "stage_backends": {
+                            "asr.primary": "cpu",
+                            "vlm.fastvlm.primary": "npu",
+                        },
+                    }
+                },
+                "comparisons": [
+                    {
+                        "workflow_id": "workflow_b_voice_vision",
+                        "actual_warm_latency_ms": 16000,
+                        "candidate_predicted_makespan_ms": 15000,
+                        "latency_delta_ms": 1000,
+                    }
+                ],
+            },
+            sustained_summary={
+                "workflow_summary": {
+                    "workflow_b_voice_vision": {
+                        "warm_latency_ms": {"first": 20000.0, "last": 15000.0},
+                        "thermal": {
+                            "cpu_c": {"first": 42.0, "last": 39.0},
+                            "skin_c": {"first": 37.0, "last": 35.0},
+                        },
+                    }
+                }
+            },
+            profiler_registry={"entries": []},
+        )
+
+        self.assertEqual(payload["thermal_scale_by_workflow"]["workflow_b_voice_vision"]["warm_latency_scale"], 1.0)
+        self.assertEqual(payload["backend_thermal_factors_by_workflow"]["workflow_b_voice_vision"]["cpu"], 1.0)
+        self.assertEqual(payload["backend_thermal_factors_by_workflow"]["workflow_b_voice_vision"]["npu"], 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

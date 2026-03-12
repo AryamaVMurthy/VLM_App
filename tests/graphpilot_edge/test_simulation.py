@@ -137,6 +137,52 @@ class DiscreteEventSimulationTest(unittest.TestCase):
         self.assertEqual(calibrated.makespan_ms, 25)
         self.assertGreater(calibrated.ttft_ms, baseline.ttft_ms)
 
+    def test_stage_latency_scale_does_not_double_count_residual_bias(self):
+        workflow = WorkflowDag(
+            workflow_id="single_stage",
+            stage_ids=("planner.primary",),
+            edges=(),
+        )
+        plan = CandidatePlan(
+            workflow_id="single_stage",
+            stage_options=(StageOption("planner.primary", "gemma_fast", "cpu", 100, 16),),
+        )
+
+        calibrated = simulate_candidate_plan(
+            workflow,
+            plan,
+            resource_capacities={"cpu": 1},
+            calibration=SimulationCalibration(
+                stage_latency_scales={("planner.primary", "cpu"): 2.0},
+                stage_residual_bias_ms={("planner.primary", "cpu"): 100.0},
+            ),
+        )
+
+        self.assertEqual(calibrated.makespan_ms, 200)
+
+    def test_backend_contention_scale_requires_explicit_contention_model(self):
+        workflow = WorkflowDag(
+            workflow_id="single_stage",
+            stage_ids=("vlm.fastvlm.primary",),
+            edges=(),
+        )
+        plan = CandidatePlan(
+            workflow_id="single_stage",
+            stage_options=(StageOption("vlm.fastvlm.primary", "fastvlm", "npu", 100, 16),),
+        )
+
+        calibrated = simulate_candidate_plan(
+            workflow,
+            plan,
+            resource_capacities={"npu": 1},
+            calibration=SimulationCalibration(
+                backend_contention_scales={"npu": 37.0},
+                backend_utilizations={"npu": 1.0},
+            ),
+        )
+
+        self.assertEqual(calibrated.makespan_ms, 100)
+
     def test_stream_simulation_reports_queue_delay_and_deadline_miss_rate(self):
         requests = (
             RequestSpec(

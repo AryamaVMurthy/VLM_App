@@ -52,6 +52,13 @@ class GenerateGraphPilotBaselineRegistryTest(unittest.TestCase):
                         "no_memory_kv",
                         "no_knob_tuning",
                         "no_thermal_adaptation",
+                        "band_like",
+                        "adms_like",
+                        "puzzle_like",
+                        "twill_like",
+                        "heteroinfer_like",
+                        "agent_xpu_like",
+                        "hero_like",
                     ]
                 ),
             )
@@ -69,6 +76,29 @@ class GenerateGraphPilotBaselineRegistryTest(unittest.TestCase):
             self.assertEqual(static_best["resource_assignment"]["vlm.fastvlm.primary"], "npu0")
             current_deployed_b = next(item for item in workflow_b["baselines"] if item["baseline_id"] == "current_deployed_plan")
             self.assertEqual(current_deployed_b["resource_assignment"]["vlm.fastvlm.primary"], "npu0")
+
+    def test_main_writes_mixed_criticality_registry_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            output_path = root / "baseline_registry.json"
+
+            rc = self.module.main([
+                "--output",
+                str(output_path),
+                "--workloads",
+                "continuous.mixed_foreground_background",
+                "--baselines",
+                "stage_greedy",
+            ])
+
+            self.assertEqual(rc, 0)
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            mixed = payload["workloads"][0]
+            self.assertIsNone(mixed["scenario_id"])
+            stage_greedy = mixed["baselines"][0]
+            self.assertEqual(stage_greedy["status"], "ok")
+            self.assertIn("compound.workflow_c.high_recall_rag", stage_greedy["resource_assignment"])
+            self.assertIn("model.glue.retrieval_chunk_pack", stage_greedy["resource_assignment"])
 
 
 if __name__ == "__main__":

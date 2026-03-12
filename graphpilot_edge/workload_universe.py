@@ -38,6 +38,7 @@ class WorkloadSpec:
     base_workload_id: str | None = None
     arrivals_ms: tuple[int, ...] = ()
     deadline_ms: int | None = None
+    request_groups: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,11 @@ class WorkloadUniverse:
                     f"Continuous workload '{workload_id}' is missing base_workload_id."
                 )
             return self.build_scenario(spec.base_workload_id)
+        if spec.category == "mixed_criticality_stream":
+            raise ValueError(
+                f"Mixed-criticality workload '{workload_id}' does not map to a single scenario. "
+                "Use build_request_specs() to expand its request groups."
+            )
         if spec.builder is None:
             raise ValueError(f"Workload '{workload_id}' is missing a scenario builder.")
         builder = _SCENARIO_BUILDERS.get(spec.builder)
@@ -76,6 +82,39 @@ class WorkloadUniverse:
         utilizations: Mapping[str, float] | None = None,
     ) -> tuple[RequestSpec, ...]:
         spec = self._require_spec(workload_id)
+        if spec.category == "mixed_criticality_stream":
+            request_specs: list[RequestSpec] = []
+            for group_index, group in enumerate(spec.request_groups):
+                base_workload_id = str(group["base_workload_id"])
+                scenario = self.build_scenario(base_workload_id)
+                plan = scenario.instantiate_candidate_plan(
+                    simulator=simulator,
+                    resource_assignment=resource_assignment,
+                    batch_size=batch_size,
+                    current_temp_c=current_temp_c,
+                    utilizations=utilizations,
+                )
+                arrivals_ms = tuple(int(value) for value in group.get("arrivals_ms", ()))
+                if not arrivals_ms:
+                    raise ValueError(
+                        f"Mixed-criticality workload '{workload_id}' request group {group_index} "
+                        "is missing arrivals_ms."
+                    )
+                deadline_ms = group.get("deadline_ms", spec.deadline_ms)
+                criticality_class = str(group.get("criticality_class", "default"))
+                for request_index, arrival_ms in enumerate(arrivals_ms):
+                    request_specs.append(
+                        RequestSpec(
+                            request_id=f"{workload_id}:group{group_index}:request_{request_index}",
+                            arrival_ms=arrival_ms,
+                            workflow=scenario.workflow,
+                            plan=plan,
+                            deadline_ms=int(deadline_ms) if deadline_ms is not None else None,
+                            criticality_class=criticality_class,
+                            source_workload_id=base_workload_id,
+                        )
+                    )
+            return tuple(sorted(request_specs, key=lambda item: (item.arrival_ms, item.request_id)))
         base_workload_id = spec.base_workload_id or workload_id
         scenario = self.build_scenario(base_workload_id)
         plan = scenario.instantiate_candidate_plan(
@@ -93,6 +132,7 @@ class WorkloadUniverse:
                 workflow=scenario.workflow,
                 plan=plan,
                 deadline_ms=spec.deadline_ms,
+                source_workload_id=base_workload_id,
             )
             for index, arrival_ms in enumerate(arrivals_ms)
         )
@@ -122,6 +162,7 @@ def load_workload_universe(path: Path = DEFAULT_WORKLOAD_UNIVERSE_PATH) -> Workl
             base_workload_id=entry.get("base_workload_id"),
             arrivals_ms=tuple(entry.get("arrivals_ms", ())),
             deadline_ms=entry.get("deadline_ms"),
+            request_groups=tuple(entry.get("request_groups", ())),
         )
         if spec.category == "continuous_stream":
             if spec.base_workload_id is None:
@@ -132,6 +173,22 @@ def load_workload_universe(path: Path = DEFAULT_WORKLOAD_UNIVERSE_PATH) -> Workl
                 raise ValueError(
                     f"Continuous workload '{workload_id}' must declare arrivals_ms."
                 )
+        elif spec.category == "mixed_criticality_stream":
+            if not spec.request_groups:
+                raise ValueError(
+                    f"Mixed-criticality workload '{workload_id}' must declare request_groups."
+                )
+            for group_index, group in enumerate(spec.request_groups):
+                if group.get("base_workload_id") is None:
+                    raise ValueError(
+                        f"Mixed-criticality workload '{workload_id}' request group {group_index} "
+                        "must declare base_workload_id."
+                    )
+                if not tuple(group.get("arrivals_ms", ())):
+                    raise ValueError(
+                        f"Mixed-criticality workload '{workload_id}' request group {group_index} "
+                        "must declare arrivals_ms."
+                    )
         elif spec.builder is None:
             raise ValueError(
                 f"Non-continuous workload '{workload_id}' must declare a builder."
@@ -144,7 +201,14 @@ def load_workload_universe(path: Path = DEFAULT_WORKLOAD_UNIVERSE_PATH) -> Workl
             raise ValueError(
                 f"Workload '{spec.workload_id}' references missing base workload '{spec.base_workload_id}'."
             )
-        if spec.category != "continuous_stream":
+        for group in spec.request_groups:
+            base_workload_id = group.get("base_workload_id")
+            if base_workload_id is not None and base_workload_id not in universe.specs:
+                raise ValueError(
+                    f"Workload '{spec.workload_id}' references missing mixed-stream base workload "
+                    f"'{base_workload_id}'."
+                )
+        if spec.category not in {"continuous_stream", "mixed_criticality_stream"}:
             universe.build_scenario(spec.workload_id)
     return universe
 

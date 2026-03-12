@@ -79,6 +79,9 @@ class GenerateGraphPilotCandidatePlansTest(unittest.TestCase):
             "workflow_a_voice_only",
             {
                 "global_orchestration_overhead_ms": 25.0,
+                "orchestration_overhead_ms": {
+                    "workflow_a_voice_only": 7.0,
+                },
                 "thermal_scale_by_workflow": {
                     "workflow_a_voice_only": {"warm_latency_scale": 1.2}
                 },
@@ -105,7 +108,7 @@ class GenerateGraphPilotCandidatePlansTest(unittest.TestCase):
         )
 
         self.assertIsNotNone(calibration)
-        self.assertEqual(calibration.orchestration_overhead_ms, 25.0)
+        self.assertEqual(calibration.orchestration_overhead_ms, 7.0)
         self.assertEqual(calibration.workflow_thermal_scale, 1.2)
         self.assertEqual(calibration.backend_thermal_factors["cpu"], 1.2)
         self.assertEqual(calibration.backend_utilizations["cpu"], 1.0)

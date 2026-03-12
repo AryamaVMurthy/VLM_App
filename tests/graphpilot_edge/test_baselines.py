@@ -2,7 +2,11 @@ import unittest
 
 from graphpilot_edge.baselines import build_baseline_candidate
 from graphpilot_edge.hardware_simulator import HardwareInstance, HardwareSimulator, PartitionAssignment, TaskProfile
-from graphpilot_edge.model_graph_simulator import ModelGraphNodeProfile, ModelGraphScenario
+from graphpilot_edge.model_graph_simulator import (
+    ModelGraphNodeProfile,
+    ModelGraphScenario,
+    build_llm_scenario,
+)
 from graphpilot_edge.workload_universe import DEFAULT_WORKLOAD_UNIVERSE_PATH, load_workload_universe
 from graphpilot_edge.workflow import WorkflowDag
 
@@ -283,6 +287,63 @@ class GraphPilotBaselinesTest(unittest.TestCase):
 
         self.assertGreater(no_memory_kv.score_ms, 0.0)
         self.assertGreater(no_knob_tuning.score_ms, 0.0)
+
+    def test_paper_inspired_baselines_are_runnable(self):
+        for baseline_id in (
+            "band_like",
+            "adms_like",
+            "puzzle_like",
+            "twill_like",
+            "heteroinfer_like",
+            "agent_xpu_like",
+            "hero_like",
+        ):
+            with self.subTest(baseline_id=baseline_id):
+                candidate = build_baseline_candidate(
+                    self.workflow_c,
+                    simulator=self.simulator,
+                    baseline_id=baseline_id,
+                )
+                self.assertGreater(candidate.score_ms, 0.0)
+
+    def test_band_like_and_puzzle_like_disable_streaming_edges(self):
+        for baseline_id in ("band_like", "puzzle_like"):
+            with self.subTest(baseline_id=baseline_id):
+                candidate = build_baseline_candidate(
+                    self.workflow_a,
+                    simulator=self.simulator,
+                    baseline_id=baseline_id,
+                )
+                self.assertTrue(candidate.workflow.has_edge("asr.primary", "planner.primary", "full"))
+                self.assertTrue(candidate.workflow.has_edge("responder.primary", "tts.primary", "full"))
+
+    def test_heteroinfer_like_prefers_accelerators_for_llm_prefill_and_decode(self):
+        llm = build_llm_scenario(
+            scenario_id="model.llm.short_prompt_short_answer",
+            prompt_tokens=128,
+            output_tokens=32,
+        )
+
+        candidate = build_baseline_candidate(
+            llm,
+            simulator=self.simulator,
+            baseline_id="heteroinfer_like",
+        )
+
+        self.assertEqual(candidate.resource_assignment["llm.prompt_assembly"], "cpu0")
+        self.assertEqual(candidate.resource_assignment["llm.postprocess"], "cpu0")
+        self.assertIn(candidate.resource_assignment["llm.prefill"], {"gpu0", "npu0"})
+        self.assertIn(candidate.resource_assignment["llm.decode"], {"gpu0", "npu0"})
+
+    def test_hero_like_matches_rag_style_cpu_retrieval_and_npu_vlm(self):
+        candidate = build_baseline_candidate(
+            self.workflow_c,
+            simulator=self.simulator,
+            baseline_id="hero_like",
+        )
+
+        self.assertEqual(candidate.resource_assignment["retrieval.embedder.primary"], "cpu0")
+        self.assertEqual(candidate.resource_assignment["vlm.fastvlm.primary"], "npu0")
 
 
 if __name__ == "__main__":
