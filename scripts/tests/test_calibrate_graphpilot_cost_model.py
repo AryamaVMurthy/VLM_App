@@ -129,6 +129,132 @@ class CalibrateGraphPilotCostModelTest(unittest.TestCase):
         self.assertEqual(payload["global_orchestration_overhead_ms"], 0.0)
         self.assertEqual(payload["residual_bias_ms"]["workflow_a_voice_only"], -100.0)
 
+    def test_main_writes_family_and_stage_backend_surrogates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            experiment_summary = root / "experiment_summary.json"
+            sustained_summary = root / "sustained_summary.json"
+            profiler_registry = root / "profiler_registry.json"
+            output_root = root / "out"
+            experiment_summary.write_text(
+                json.dumps(
+                    {
+                        "actual_workflows": {
+                            "workflow_a_voice_only": {
+                                "warm_latency_ms": 9805,
+                                "stage_backends": {
+                                    "asr.primary": "cpu",
+                                    "planner.primary": "cpu",
+                                    "responder.primary": "cpu",
+                                    "tts.primary": "cpu",
+                                },
+                            }
+                        },
+                        "comparisons": [
+                            {
+                                "workflow_id": "workflow_a_voice_only",
+                                "actual_warm_latency_ms": 9805,
+                                "candidate_predicted_makespan_ms": 13630,
+                                "latency_delta_ms": -3825,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            sustained_summary.write_text(
+                json.dumps(
+                    {
+                        "workflow_summary": {
+                            "workflow_a_voice_only": {
+                                "warm_latency_ms": {"first": 9805.0, "last": 10120.0},
+                                "thermal": {
+                                    "cpu_c": {"first": 35.0, "last": 44.0, "drift": 9.0},
+                                    "skin_c": {"first": 33.0, "last": 37.0, "drift": 4.0},
+                                },
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            profiler_registry.write_text(
+                json.dumps(
+                    {
+                        "entries": [
+                            {
+                                "stage_id": "asr.primary",
+                                "backend": "cpu",
+                                "variant": "whisper_stt",
+                                "metrics": {
+                                    "warm_latency_ms": 320.0,
+                                    "cold_latency_ms": 360.0,
+                                    "prefill_latency_ms": 0.0,
+                                    "decode_latency_ms": 320.0,
+                                    "transfer_time_ms": 3.0,
+                                    "peak_memory_bytes": 1048576,
+                                },
+                            },
+                            {
+                                "stage_id": "planner.primary",
+                                "backend": "cpu",
+                                "variant": "gemma3_1b_it",
+                                "metrics": {
+                                    "warm_latency_ms": 810.0,
+                                    "cold_latency_ms": 920.0,
+                                    "prefill_latency_ms": 530.0,
+                                    "decode_latency_ms": 280.0,
+                                    "transfer_time_ms": 2.0,
+                                    "peak_memory_bytes": 2097152,
+                                },
+                            },
+                            {
+                                "stage_id": "workflow_a_voice_only",
+                                "backend": "mixed",
+                                "variant": "graphpilot_cpu_stack",
+                                "metrics": {
+                                    "stage_backends": {
+                                        "asr.primary": "cpu",
+                                        "planner.primary": "cpu",
+                                    },
+                                    "stage_timings_ms": {
+                                        "asr.primary": 314.0,
+                                        "planner.primary": 810.0,
+                                    },
+                                },
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            rc = self.module.main(
+                [
+                    "--experiment-summary",
+                    str(experiment_summary),
+                    "--sustained-summary",
+                    str(sustained_summary),
+                    "--profiler-registry",
+                    str(profiler_registry),
+                    "--output-root",
+                    str(output_root),
+                ]
+            )
+
+            self.assertEqual(rc, 0)
+            summaries = list(output_root.glob("graphpilot_cost_calibration_*/summary.json"))
+            self.assertEqual(len(summaries), 1)
+            payload = json.loads(summaries[0].read_text(encoding="utf-8"))
+            self.assertIn("family_backend_calibration", payload)
+            self.assertIn("stage_backend_calibration", payload)
+            self.assertIn("calibration_quality_by_family", payload)
+            self.assertIn("launch_overhead_ms_by_backend", payload)
+            self.assertIn("transfer_bias_ms_by_backend", payload)
+            self.assertIn("contention_scale_by_backend", payload)
+            self.assertIn("cpu", payload["family_backend_calibration"]["asr"])
+            self.assertIn("cpu", payload["stage_backend_calibration"]["asr.primary"])
+
 
 if __name__ == "__main__":
     unittest.main()

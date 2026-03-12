@@ -42,6 +42,7 @@ from graphpilot_edge.workload_universe import (  # noqa: E402
 ARTIFACT_ROOT = ROOT_DIR / "artifacts" / "graphpilot_edge"
 DEFAULT_OUTPUT_ROOT = ARTIFACT_ROOT / "analysis"
 DEFAULT_PROFILER_REGISTRY = ARTIFACT_ROOT / "registries" / "profiler_registry.json"
+DEFAULT_CALIBRATION_SUMMARY = ARTIFACT_ROOT / "analysis" / "graphpilot_cost_calibration_latest.json"
 DEFAULT_BASELINES = (
     "cpu_only",
     "gpu_only",
@@ -50,6 +51,10 @@ DEFAULT_BASELINES = (
     "stage_greedy",
     "static_best_map",
     "no_pipeline",
+    "no_fallback_aware",
+    "no_memory_kv",
+    "no_knob_tuning",
+    "no_thermal_adaptation",
 )
 MEBIBYTE = 1024 * 1024
 
@@ -59,6 +64,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--workload-universe", type=Path, default=DEFAULT_WORKLOAD_UNIVERSE_PATH)
     parser.add_argument("--hardware-topology", type=Path, default=DEFAULT_HARDWARE_TOPOLOGY_PATH)
     parser.add_argument("--profiler-registry", type=Path, default=DEFAULT_PROFILER_REGISTRY)
+    parser.add_argument("--calibration-summary", type=Path, default=None)
+    parser.add_argument("--checkpoint-manifest", type=Path, default=None)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     return parser.parse_args(argv)
 
@@ -69,6 +76,20 @@ def load_json(path: Path) -> dict[str, Any]:
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def resolve_checkpoint_inputs(manifest_path: Path | None) -> dict[str, Path]:
+    if manifest_path is None:
+        return {}
+    manifest = load_json(manifest_path)
+    canonical = manifest.get("canonical_evidence_paths") or {}
+    if not isinstance(canonical, dict):
+        raise ValueError("Checkpoint manifest canonical_evidence_paths must be a mapping.")
+    return {
+        key: Path(value)
+        for key, value in canonical.items()
+        if value is not None
+    }
 
 
 def resource_capacities_from_topology(simulator) -> dict[str, int]:
@@ -550,11 +571,18 @@ def build_characterization_summary(
     workload_universe_path: Path = DEFAULT_WORKLOAD_UNIVERSE_PATH,
     hardware_topology_path: Path = DEFAULT_HARDWARE_TOPOLOGY_PATH,
     profiler_registry_path: Path = DEFAULT_PROFILER_REGISTRY,
+    calibration_summary_path: Path | None = None,
+    checkpoint_manifest_path: Path | None = None,
 ) -> dict[str, Any]:
     universe = load_workload_universe(workload_universe_path)
     topology = load_hardware_topology(hardware_topology_path)
     profiler_registry = (
         load_json(profiler_registry_path) if profiler_registry_path.exists() else None
+    )
+    calibration_summary = (
+        load_json(calibration_summary_path)
+        if calibration_summary_path is not None and calibration_summary_path.exists()
+        else None
     )
     simulator = topology.simulator
     baseline_comparisons = build_baseline_comparisons(universe, simulator)
@@ -563,8 +591,11 @@ def build_characterization_summary(
         "workload_universe": str(workload_universe_path.resolve()),
         "hardware_topology": str(hardware_topology_path.resolve()),
         "profiler_registry": str(profiler_registry_path.resolve()),
+        "calibration_summary": str(calibration_summary_path.resolve()) if calibration_summary_path is not None else None,
+        "checkpoint_manifest": str(checkpoint_manifest_path.resolve()) if checkpoint_manifest_path is not None else None,
         "surrogate_parameter_notes": dict(topology.surrogate_parameter_notes),
         "public_anchors": list(topology.public_anchors),
+        "calibration_quality_by_family": (calibration_summary or {}).get("calibration_quality_by_family", {}),
         "backend_affinity": build_backend_affinity(universe, simulator),
         "baseline_comparisons": baseline_comparisons,
         "ablations": build_ablations(baseline_comparisons, profiler_registry),
@@ -591,6 +622,8 @@ def write_report(path: Path, summary: dict[str, Any]) -> None:
         f"- Generated at: `{summary['generated_at']}`",
         f"- Workload universe: `{summary['workload_universe']}`",
         f"- Hardware topology: `{summary['hardware_topology']}`",
+        f"- Calibration summary: `{summary['calibration_summary']}`",
+        f"- Checkpoint manifest: `{summary['checkpoint_manifest']}`",
         "",
         "## Backend affinity",
         "",
@@ -642,6 +675,13 @@ def write_report(path: Path, summary: dict[str, Any]) -> None:
             f"- Quality proxy note: {summary['quality_proxy_note']}",
         ]
     )
+    if summary["calibration_quality_by_family"]:
+        lines.extend(["", "## Calibration quality by family", ""])
+        for family, payload in sorted(summary["calibration_quality_by_family"].items()):
+            lines.append(
+                f"- `{family}` sample_count={payload.get('sample_count')} "
+                f"mean_absolute_error_ms={payload.get('mean_absolute_error_ms')}"
+            )
     for family, rows in sorted(summary["knob_frontiers"].items()):
         best = rows[0] if rows else None
         if best is None:
@@ -652,10 +692,13 @@ def write_report(path: Path, summary: dict[str, Any]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    checkpoint_inputs = resolve_checkpoint_inputs(args.checkpoint_manifest)
     summary = build_characterization_summary(
         workload_universe_path=args.workload_universe,
         hardware_topology_path=args.hardware_topology,
         profiler_registry_path=args.profiler_registry,
+        calibration_summary_path=args.calibration_summary or checkpoint_inputs.get("calibration_summary"),
+        checkpoint_manifest_path=args.checkpoint_manifest,
     )
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     output_dir = args.output_root / f"graphpilot_characterization_{timestamp}"

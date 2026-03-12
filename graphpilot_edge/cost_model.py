@@ -23,6 +23,13 @@ class SimulationCalibration:
     backend_thermal_factors: Mapping[str, float] = field(default_factory=dict)
     contention_sensitivities: Mapping[tuple[str, str], float] = field(default_factory=dict)
     backend_utilizations: Mapping[str, float] = field(default_factory=dict)
+    stage_latency_scales: Mapping[tuple[str, str], float] = field(default_factory=dict)
+    family_latency_scales: Mapping[tuple[str, str], float] = field(default_factory=dict)
+    stage_residual_bias_ms: Mapping[tuple[str, str], float] = field(default_factory=dict)
+    family_residual_bias_ms: Mapping[tuple[str, str], float] = field(default_factory=dict)
+    backend_launch_overheads_ms: Mapping[str, float] = field(default_factory=dict)
+    backend_transfer_bias_ms: Mapping[str, float] = field(default_factory=dict)
+    backend_contention_scales: Mapping[str, float] = field(default_factory=dict)
 
 
 def compute_execution_time_ms(

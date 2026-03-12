@@ -32,6 +32,10 @@ DEFAULT_BASELINES = (
     "stage_greedy",
     "static_best_map",
     "no_pipeline",
+    "no_fallback_aware",
+    "no_memory_kv",
+    "no_knob_tuning",
+    "no_thermal_adaptation",
 )
 
 

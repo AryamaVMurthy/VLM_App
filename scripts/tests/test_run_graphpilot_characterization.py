@@ -39,11 +39,37 @@ class RunGraphPilotCharacterizationTest(unittest.TestCase):
         self.assertIn("stage_greedy", baseline_ids)
         self.assertIn("static_best_map", baseline_ids)
         self.assertIn("no_pipeline", baseline_ids)
+        self.assertIn("no_fallback_aware", baseline_ids)
+        self.assertIn("no_memory_kv", baseline_ids)
+        self.assertIn("no_knob_tuning", baseline_ids)
+        self.assertIn("no_thermal_adaptation", baseline_ids)
 
         pipeline_rows = summary["ablations"]["pipeline"]
         self.assertTrue(
             any(row["workload_id"] == "compound.workflow_a.default" for row in pipeline_rows)
         )
+
+    def test_build_characterization_summary_includes_calibration_quality(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            calibration_summary = root / "calibration_summary.json"
+            calibration_summary.write_text(
+                json.dumps(
+                    {
+                        "calibration_quality_by_family": {
+                            "asr": {"sample_count": 2, "mean_absolute_error_ms": 8.0}
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            summary = self.module.build_characterization_summary(
+                calibration_summary_path=calibration_summary
+            )
+
+            self.assertIn("calibration_quality_by_family", summary)
+            self.assertEqual(summary["calibration_quality_by_family"]["asr"]["sample_count"], 2)
 
     def test_main_writes_summary_and_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -62,6 +88,50 @@ class RunGraphPilotCharacterizationTest(unittest.TestCase):
             report_text = report_path.read_text(encoding="utf-8")
             self.assertIn("Baseline comparisons", report_text)
             self.assertIn("Ablations", report_text)
+
+    def test_main_uses_checkpoint_manifest_for_calibration_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            output_root = root / "out"
+            calibration_summary = root / "calibration_summary.json"
+            checkpoint_manifest = root / "checkpoint_summary.json"
+            calibration_summary.write_text(
+                json.dumps(
+                    {
+                        "calibration_quality_by_family": {
+                            "llm": {"sample_count": 3, "mean_absolute_error_ms": 14.0}
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            checkpoint_manifest.write_text(
+                json.dumps(
+                    {
+                        "canonical_evidence_paths": {
+                            "calibration_summary": str(calibration_summary.resolve())
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            rc = self.module.main(
+                [
+                    "--checkpoint-manifest",
+                    str(checkpoint_manifest),
+                    "--output-root",
+                    str(output_root),
+                ]
+            )
+
+            self.assertEqual(rc, 0)
+            summaries = list(output_root.glob("graphpilot_characterization_*/summary.json"))
+            self.assertEqual(len(summaries), 1)
+            payload = json.loads(summaries[0].read_text(encoding="utf-8"))
+            self.assertEqual(payload["checkpoint_manifest"], str(checkpoint_manifest.resolve()))
+            self.assertIn("calibration_quality_by_family", payload)
+            self.assertEqual(payload["calibration_quality_by_family"]["llm"]["sample_count"], 3)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,10 @@
 import unittest
 
 from graphpilot_edge.baselines import build_baseline_candidate
-from graphpilot_edge.hardware_simulator import HardwareInstance, HardwareSimulator
+from graphpilot_edge.hardware_simulator import HardwareInstance, HardwareSimulator, PartitionAssignment, TaskProfile
+from graphpilot_edge.model_graph_simulator import ModelGraphNodeProfile, ModelGraphScenario
 from graphpilot_edge.workload_universe import DEFAULT_WORKLOAD_UNIVERSE_PATH, load_workload_universe
+from graphpilot_edge.workflow import WorkflowDag
 
 
 class GraphPilotBaselinesTest(unittest.TestCase):
@@ -202,6 +204,85 @@ class GraphPilotBaselinesTest(unittest.TestCase):
                 simulator=self.simulator,
                 baseline_id="npu_only",
             )
+
+    def test_no_fallback_aware_can_pick_partitioned_fallback_path(self):
+        scenario = ModelGraphScenario(
+            scenario_id="toy.fallback",
+            workflow=WorkflowDag(workflow_id="toy.fallback", stage_ids=("toy.stage",), edges=()),
+            node_profiles={
+                "toy.stage": ModelGraphNodeProfile(
+                    stage_id="toy.stage",
+                    family="toy",
+                    variant_id="toy",
+                    task_profile=TaskProfile(
+                        task_id="toy.stage",
+                        op_volume={"gemm": 500.0, "control": 40.0},
+                        memory_bytes=256 * 1024,
+                        input_bytes=128 * 1024,
+                        output_bytes=64 * 1024,
+                        fallback_partitions=(
+                            PartitionAssignment(
+                                partition_id="toy.npu",
+                                resource_id="npu0",
+                                op_volume={"gemm": 500.0},
+                                memory_bytes=128 * 1024,
+                                output_bytes=64 * 1024,
+                            ),
+                            PartitionAssignment(
+                                partition_id="toy.cpu",
+                                resource_id="cpu0",
+                                op_volume={"control": 40.0},
+                                memory_bytes=64 * 1024,
+                                output_bytes=16 * 1024,
+                            ),
+                        ),
+                    ),
+                )
+            },
+        )
+
+        support_safe = build_baseline_candidate(
+            scenario,
+            simulator=self.simulator,
+            baseline_id="stage_greedy",
+        )
+        fallback_unaware = build_baseline_candidate(
+            scenario,
+            simulator=self.simulator,
+            baseline_id="no_fallback_aware",
+        )
+
+        self.assertEqual(support_safe.resource_assignment["toy.stage"], "cpu0")
+        self.assertNotEqual(fallback_unaware.resource_assignment["toy.stage"], "cpu0")
+
+    def test_no_thermal_adaptation_is_slower_than_static_best_map_under_hot_state(self):
+        static_best = build_baseline_candidate(
+            self.workflow_b,
+            simulator=self.simulator,
+            baseline_id="static_best_map",
+        )
+        no_thermal = build_baseline_candidate(
+            self.workflow_b,
+            simulator=self.simulator,
+            baseline_id="no_thermal_adaptation",
+        )
+
+        self.assertGreater(no_thermal.score_ms, static_best.score_ms)
+
+    def test_no_memory_kv_and_no_knob_tuning_are_runnable(self):
+        no_memory_kv = build_baseline_candidate(
+            self.workflow_c,
+            simulator=self.simulator,
+            baseline_id="no_memory_kv",
+        )
+        no_knob_tuning = build_baseline_candidate(
+            self.workflow_c,
+            simulator=self.simulator,
+            baseline_id="no_knob_tuning",
+        )
+
+        self.assertGreater(no_memory_kv.score_ms, 0.0)
+        self.assertGreater(no_knob_tuning.score_ms, 0.0)
 
 
 if __name__ == "__main__":

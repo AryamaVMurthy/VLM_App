@@ -58,6 +58,76 @@ def _edge_release_info(
     )
 
 
+def _stage_family(stage_id: str) -> str:
+    return stage_id.split(".", 1)[0]
+
+
+def _calibrated_transfer_ms(
+    *,
+    size_bytes: int,
+    src_backend: str,
+    dst_backend: str,
+    bandwidth_bytes_per_ms: float,
+    transfer_fixed_overhead_ms: float,
+    transfer_layout_ms: float,
+    same_memory: bool,
+    calibration: SimulationCalibration | None,
+) -> float:
+    transfer_ms = compute_transfer_cost_ms(
+        size_bytes=size_bytes,
+        src_backend=src_backend,
+        dst_backend=dst_backend,
+        same_memory=same_memory,
+        bandwidth_bytes_per_ms=bandwidth_bytes_per_ms,
+        fixed_overhead_ms=transfer_fixed_overhead_ms,
+        layout_ms=transfer_layout_ms,
+    )
+    if calibration is None or src_backend == dst_backend:
+        return transfer_ms
+    return transfer_ms + calibration.backend_transfer_bias_ms.get(dst_backend, 0.0)
+
+
+def _calibrated_execution_ms(
+    *,
+    stage_id: str,
+    option,
+    calibration: SimulationCalibration | None,
+    backend_cold: bool,
+) -> float:
+    if calibration is None:
+        return compute_execution_time_ms(
+            base_latency_ms=float(option.latency_ms),
+            compile_cost_ms=float(option.compile_cost_ms),
+            cold=backend_cold,
+        )
+    family = _stage_family(stage_id)
+    thermal_factor = calibration.backend_thermal_factors.get(
+        option.backend, calibration.workflow_thermal_scale
+    )
+    contention_factor = compute_contention_factor(
+        backend=option.backend,
+        sensitivities=calibration.contention_sensitivities,
+        utilizations=calibration.backend_utilizations,
+    ) * calibration.backend_contention_scales.get(option.backend, 1.0)
+    latency_scale = calibration.stage_latency_scales.get(
+        (stage_id, option.backend),
+        calibration.family_latency_scales.get((family, option.backend), 1.0),
+    )
+    residual_bias_ms = calibration.stage_residual_bias_ms.get(
+        (stage_id, option.backend),
+        calibration.family_residual_bias_ms.get((family, option.backend), 0.0),
+    )
+    launch_overhead_ms = calibration.backend_launch_overheads_ms.get(option.backend, 0.0)
+    exec_ms = compute_execution_time_ms(
+        base_latency_ms=float(option.latency_ms) * latency_scale,
+        thermal_factor=thermal_factor,
+        contention_factor=contention_factor,
+        compile_cost_ms=float(option.compile_cost_ms),
+        cold=backend_cold,
+    )
+    return max(0.0, exec_ms + residual_bias_ms + launch_overhead_ms)
+
+
 def simulate_candidate_plan(
     workflow: WorkflowDag,
     plan: CandidatePlan,
@@ -99,14 +169,15 @@ def simulate_candidate_plan(
                 producer_output_bytes=predecessor_option.output_bytes,
                 producer_ttft_ms=predecessor_option.ttft_ms,
             )
-            transfer_ms = compute_transfer_cost_ms(
+            transfer_ms = _calibrated_transfer_ms(
                 size_bytes=release_output_bytes,
                 src_backend=predecessor_option.backend,
                 dst_backend=option.backend,
                 same_memory=same_memory,
                 bandwidth_bytes_per_ms=bandwidth_bytes_per_ms,
-                fixed_overhead_ms=transfer_fixed_overhead_ms,
-                layout_ms=transfer_layout_ms,
+                transfer_fixed_overhead_ms=transfer_fixed_overhead_ms,
+                transfer_layout_ms=transfer_layout_ms,
+                calibration=calibration,
             )
             dependency_ready_ms = max(
                 dependency_ready_ms,
@@ -116,23 +187,11 @@ def simulate_candidate_plan(
                 copy_bytes += predecessor_option.output_bytes
                 copy_time_ms += transfer_ms
         start_ms = max(dependency_ready_ms, backend_next_free[option.backend])
-        thermal_factor = 1.0
-        contention_factor = 1.0
-        if calibration is not None:
-            thermal_factor = calibration.backend_thermal_factors.get(
-                option.backend, calibration.workflow_thermal_scale
-            )
-            contention_factor = compute_contention_factor(
-                backend=option.backend,
-                sensitivities=calibration.contention_sensitivities,
-                utilizations=calibration.backend_utilizations,
-            )
-        exec_ms = compute_execution_time_ms(
-            base_latency_ms=float(option.latency_ms),
-            thermal_factor=thermal_factor,
-            contention_factor=contention_factor,
-            compile_cost_ms=float(option.compile_cost_ms),
-            cold=backend_cold[option.backend],
+        exec_ms = _calibrated_execution_ms(
+            stage_id=stage_id,
+            option=option,
+            calibration=calibration,
+            backend_cold=backend_cold[option.backend],
         )
         finish_ms = start_ms + int(round(exec_ms))
         backend_next_free[option.backend] = finish_ms
@@ -327,14 +386,15 @@ def simulate_request_stream(
                     producer_output_bytes=predecessor_option.output_bytes,
                     producer_ttft_ms=predecessor_option.ttft_ms,
                 )
-                transfer_ms = compute_transfer_cost_ms(
+                transfer_ms = _calibrated_transfer_ms(
                     size_bytes=release_output_bytes,
                     src_backend=predecessor_option.backend,
                     dst_backend=option.backend,
                     same_memory=same_memory,
                     bandwidth_bytes_per_ms=bandwidth_bytes_per_ms,
-                    fixed_overhead_ms=transfer_fixed_overhead_ms,
-                    layout_ms=transfer_layout_ms,
+                    transfer_fixed_overhead_ms=transfer_fixed_overhead_ms,
+                    transfer_layout_ms=transfer_layout_ms,
+                    calibration=calibration,
                 )
                 dependency_ready_ms = max(
                     dependency_ready_ms,
@@ -344,23 +404,11 @@ def simulate_request_stream(
                     copy_bytes += predecessor_option.output_bytes
                     copy_time_ms += transfer_ms
             start_ms = max(request.arrival_ms, dependency_ready_ms, backend_next_free[option.backend])
-            thermal_factor = 1.0
-            contention_factor = 1.0
-            if calibration is not None:
-                thermal_factor = calibration.backend_thermal_factors.get(
-                    option.backend, calibration.workflow_thermal_scale
-                )
-                contention_factor = compute_contention_factor(
-                    backend=option.backend,
-                    sensitivities=calibration.contention_sensitivities,
-                    utilizations=calibration.backend_utilizations,
-                )
-            exec_ms = compute_execution_time_ms(
-                base_latency_ms=float(option.latency_ms),
-                thermal_factor=thermal_factor,
-                contention_factor=contention_factor,
-                compile_cost_ms=float(option.compile_cost_ms),
-                cold=backend_cold[option.backend],
+            exec_ms = _calibrated_execution_ms(
+                stage_id=stage_id,
+                option=option,
+                calibration=calibration,
+                backend_cold=backend_cold[option.backend],
             )
             finish_ms = start_ms + int(round(exec_ms))
             backend_next_free[option.backend] = finish_ms

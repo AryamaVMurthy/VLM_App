@@ -49,6 +49,20 @@ def resolve_latest_analysis_summary(root: Path, prefix: str) -> Path | None:
     return candidates[-1]
 
 
+def resolve_checkpoint_inputs(manifest_path: Path | None) -> dict[str, Path]:
+    if manifest_path is None:
+        return {}
+    manifest = load_json(manifest_path)
+    canonical = manifest.get("canonical_evidence_paths") or {}
+    if not isinstance(canonical, dict):
+        raise ValueError("Checkpoint manifest canonical_evidence_paths must be a mapping.")
+    return {
+        key: Path(value)
+        for key, value in canonical.items()
+        if value is not None
+    }
+
+
 def select_workflow_ids(workflows: dict[str, object], backend_matrix: dict[str, Any]) -> list[str]:
     try:
         retrieval_backends = resolve_feasible_backends(backend_matrix, "retrieval.embedder.primary")
@@ -86,6 +100,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--optimization-config", type=Path, default=CONFIG_DIR / "optimization_defaults.json")
     parser.add_argument("--tuning-summary", type=Path, default=None)
     parser.add_argument("--calibration-summary", type=Path, default=None)
+    parser.add_argument("--checkpoint-manifest", type=Path, default=None)
     return parser.parse_args(argv)
 
 
@@ -126,6 +141,18 @@ def resolve_simulation_calibration(
     backend_utilizations = (
         calibration_summary.get("backend_utilizations_by_workflow", {}).get(workflow_id, {})
     )
+    stage_latency_scales: dict[tuple[str, str], float] = {}
+    family_latency_scales: dict[tuple[str, str], float] = {}
+    stage_residual_bias_ms: dict[tuple[str, str], float] = {}
+    family_residual_bias_ms: dict[tuple[str, str], float] = {}
+    for stage_id, backend_rows in (calibration_summary.get("stage_backend_calibration") or {}).items():
+        for backend, payload in backend_rows.items():
+            stage_latency_scales[(str(stage_id), str(backend))] = float(payload.get("latency_scale", 1.0))
+            stage_residual_bias_ms[(str(stage_id), str(backend))] = float(payload.get("residual_bias_ms", 0.0))
+    for family, backend_rows in (calibration_summary.get("family_backend_calibration") or {}).items():
+        for backend, payload in backend_rows.items():
+            family_latency_scales[(str(family), str(backend))] = float(payload.get("latency_scale", 1.0))
+            family_residual_bias_ms[(str(family), str(backend))] = float(payload.get("residual_bias_ms", 0.0))
     return SimulationCalibration(
         orchestration_overhead_ms=float(
             calibration_summary.get("global_orchestration_overhead_ms", 0.0)
@@ -136,6 +163,22 @@ def resolve_simulation_calibration(
         },
         backend_utilizations={
             str(backend): float(value) for backend, value in backend_utilizations.items()
+        },
+        stage_latency_scales=stage_latency_scales,
+        family_latency_scales=family_latency_scales,
+        stage_residual_bias_ms=stage_residual_bias_ms,
+        family_residual_bias_ms=family_residual_bias_ms,
+        backend_launch_overheads_ms={
+            str(backend): float(value)
+            for backend, value in (calibration_summary.get("launch_overhead_ms_by_backend") or {}).items()
+        },
+        backend_transfer_bias_ms={
+            str(backend): float(value)
+            for backend, value in (calibration_summary.get("transfer_bias_ms_by_backend") or {}).items()
+        },
+        backend_contention_scales={
+            str(backend): float(value)
+            for backend, value in (calibration_summary.get("contention_scale_by_backend") or {}).items()
         },
     )
 
@@ -171,6 +214,7 @@ def resolve_stream_requests(
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    checkpoint_inputs = resolve_checkpoint_inputs(args.checkpoint_manifest)
     workflows = load_workflow_catalog(args.workflow_path)
     _stages = load_stage_catalog(args.stage_path)
     backend_matrix = load_json(args.backend_matrix)
@@ -181,10 +225,10 @@ def main(argv: list[str] | None = None) -> int:
     optimization_config = (
         load_json(args.optimization_config) if args.optimization_config is not None else None
     )
-    tuning_summary_path = args.tuning_summary or resolve_latest_analysis_summary(
+    tuning_summary_path = args.tuning_summary or checkpoint_inputs.get("tuning_summary") or resolve_latest_analysis_summary(
         ANALYSIS_DIR, "graphpilot_hparam_tuning"
     )
-    calibration_summary_path = args.calibration_summary or resolve_latest_analysis_summary(
+    calibration_summary_path = args.calibration_summary or checkpoint_inputs.get("calibration_summary") or resolve_latest_analysis_summary(
         ANALYSIS_DIR, "graphpilot_cost_calibration"
     )
     tuning_summary = load_json(tuning_summary_path) if tuning_summary_path else None
@@ -301,6 +345,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     registry["calibration_summary"] = (
         str(calibration_summary_path.resolve()) if calibration_summary_path else None
+    )
+    registry["checkpoint_manifest"] = (
+        str(args.checkpoint_manifest.resolve()) if args.checkpoint_manifest else None
     )
     registry["last_updated"] = datetime.now(timezone.utc).date().isoformat()
     write_json(args.candidate_registry, registry)

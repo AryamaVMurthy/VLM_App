@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from itertools import product
 from typing import Mapping
 
-from .hardware_simulator import HardwarePrediction, HardwareSimulator
-from .model_graph_simulator import ModelGraphScenario
+from .hardware_simulator import HardwarePrediction, HardwareSimulator, TaskProfile
+from .model_graph_simulator import ModelGraphNodeProfile, ModelGraphScenario
 from .models import CandidatePlan
 from .simulation import simulate_candidate_plan
 from .workflow import WorkflowDag, WorkflowEdge
@@ -33,65 +33,114 @@ def build_baseline_candidate(
     utilizations = utilizations or {}
     baseline_id = baseline_id.lower()
 
+    effective_scenario = scenario
+
     if baseline_id in {"cpu_only", "gpu_only", "npu_only"}:
         backend = baseline_id.removesuffix("_only")
         assignment = _single_backend_assignment(
-            scenario,
+            effective_scenario,
             simulator=simulator,
             backend=backend,
             batch_size=batch_size,
             current_temp_c=current_temp_c,
             utilizations=utilizations,
         )
-        workflow = scenario.workflow
+        workflow = effective_scenario.workflow
     elif baseline_id == "current_deployed_plan":
         assignment = _current_deployed_assignment(
-            scenario,
+            effective_scenario,
             simulator=simulator,
             batch_size=batch_size,
             current_temp_c=current_temp_c,
             utilizations=utilizations,
         )
-        workflow = scenario.workflow
+        workflow = effective_scenario.workflow
     elif baseline_id == "stage_greedy":
         assignment = _stage_greedy_assignment(
-            scenario,
+            effective_scenario,
             simulator=simulator,
             batch_size=batch_size,
             current_temp_c=current_temp_c,
             utilizations=utilizations,
         )
-        workflow = scenario.workflow
+        workflow = effective_scenario.workflow
     elif baseline_id == "static_best_map":
         assignment = _static_best_map_assignment(
-            scenario,
+            effective_scenario,
             simulator=simulator,
             batch_size=batch_size,
             current_temp_c=current_temp_c,
             utilizations=utilizations,
         )
-        workflow = scenario.workflow
+        workflow = effective_scenario.workflow
     elif baseline_id == "no_pipeline":
         assignment = _stage_greedy_assignment(
-            scenario,
+            effective_scenario,
             simulator=simulator,
             batch_size=batch_size,
             current_temp_c=current_temp_c,
             utilizations=utilizations,
         )
         workflow = WorkflowDag(
-            workflow_id=f"{scenario.workflow.workflow_id}.no_pipeline",
-            stage_ids=scenario.workflow.stage_ids,
+            workflow_id=f"{effective_scenario.workflow.workflow_id}.no_pipeline",
+            stage_ids=effective_scenario.workflow.stage_ids,
             edges=tuple(
                 WorkflowEdge(edge.source_stage_id, edge.target_stage_id, "full")
-                for edge in scenario.workflow.edges
+                for edge in effective_scenario.workflow.edges
             ),
-            chunk_sizes=scenario.workflow.chunk_sizes,
+            chunk_sizes=effective_scenario.workflow.chunk_sizes,
         )
+    elif baseline_id == "no_fallback_aware":
+        assignment = _stage_greedy_assignment(
+            effective_scenario,
+            simulator=simulator,
+            batch_size=batch_size,
+            current_temp_c=current_temp_c,
+            utilizations=utilizations,
+            allow_fallback=True,
+        )
+        workflow = effective_scenario.workflow
+    elif baseline_id == "no_memory_kv":
+        effective_scenario = _scenario_scaled_for_ablation(
+            effective_scenario,
+            baseline_id=baseline_id,
+        )
+        assignment = _static_best_map_assignment(
+            effective_scenario,
+            simulator=simulator,
+            batch_size=batch_size,
+            current_temp_c=current_temp_c,
+            utilizations=utilizations,
+        )
+        workflow = effective_scenario.workflow
+    elif baseline_id == "no_knob_tuning":
+        effective_scenario = _scenario_scaled_for_ablation(
+            effective_scenario,
+            baseline_id=baseline_id,
+        )
+        assignment = _static_best_map_assignment(
+            effective_scenario,
+            simulator=simulator,
+            batch_size=batch_size,
+            current_temp_c=current_temp_c,
+            utilizations=utilizations,
+        )
+        workflow = effective_scenario.workflow
+    elif baseline_id == "no_thermal_adaptation":
+        hot_state = _hot_current_temperatures(simulator)
+        assignment = _static_best_map_assignment(
+            effective_scenario,
+            simulator=simulator,
+            batch_size=batch_size,
+            current_temp_c=current_temp_c,
+            utilizations=utilizations,
+        )
+        current_temp_c = hot_state
+        workflow = effective_scenario.workflow
     else:
         raise ValueError(f"Unsupported baseline_id '{baseline_id}'.")
 
-    plan = scenario.instantiate_candidate_plan(
+    plan = effective_scenario.instantiate_candidate_plan(
         simulator=simulator,
         resource_assignment=assignment,
         batch_size=batch_size,
@@ -112,6 +161,73 @@ def build_baseline_candidate(
     )
 
 
+def _hot_current_temperatures(simulator: HardwareSimulator) -> dict[str, float]:
+    return {
+        resource_id: simulator.resource(resource_id).thermal_threshold_c + 6.0
+        for resource_id in simulator.resource_ids()
+    }
+
+
+def _scenario_scaled_for_ablation(
+    scenario: ModelGraphScenario,
+    *,
+    baseline_id: str,
+) -> ModelGraphScenario:
+    family_scale = {
+        "no_knob_tuning": {
+            "llm": (1.18, 1.12),
+            "vlm": (1.25, 1.2),
+            "stt": (1.12, 1.08),
+            "tts": (1.08, 1.05),
+            "retrieval": (1.16, 1.1),
+            "cnn": (1.08, 1.04),
+            "vit": (1.12, 1.06),
+        },
+        "no_memory_kv": {
+            "llm": (1.22, 1.35),
+            "vlm": (1.14, 1.28),
+            "retrieval": (1.05, 1.08),
+            "tts": (1.02, 1.04),
+        },
+    }.get(baseline_id)
+    if family_scale is None:
+        raise ValueError(f"Unsupported ablation scaling baseline '{baseline_id}'.")
+
+    node_profiles: dict[str, ModelGraphNodeProfile] = {}
+    for stage_id, node in scenario.node_profiles.items():
+        op_scale, memory_scale = family_scale.get(node.family, (1.0, 1.0))
+        node_profiles[stage_id] = ModelGraphNodeProfile(
+            stage_id=node.stage_id,
+            family=node.family,
+            variant_id=f"{node.variant_id}:{baseline_id}",
+            task_profile=_scaled_task_profile(
+                node.task_profile,
+                op_scale=op_scale,
+                memory_scale=memory_scale,
+            ),
+            knob_values=dict(node.knob_values),
+            quality_loss=0.0 if baseline_id == "no_knob_tuning" else node.quality_loss,
+            ttft_hint_ms=node.ttft_hint_ms,
+            tts_first_audio_hint_ms=node.tts_first_audio_hint_ms,
+        )
+    return ModelGraphScenario(
+        scenario_id=f"{scenario.scenario_id}.{baseline_id}",
+        workflow=scenario.workflow,
+        node_profiles=node_profiles,
+    )
+
+
+def _scaled_task_profile(task: TaskProfile, *, op_scale: float, memory_scale: float) -> TaskProfile:
+    return TaskProfile(
+        task_id=task.task_id,
+        op_volume={op_class: volume * op_scale for op_class, volume in task.op_volume.items()},
+        memory_bytes=max(1, int(round(task.memory_bytes * memory_scale))),
+        input_bytes=max(1, int(round(task.input_bytes * op_scale))),
+        output_bytes=max(1, int(round(task.output_bytes * memory_scale))),
+        fallback_partitions=task.fallback_partitions,
+    )
+
+
 def _single_backend_assignment(
     scenario: ModelGraphScenario,
     *,
@@ -129,7 +245,7 @@ def _single_backend_assignment(
     for stage_id in scenario.workflow.topological_order():
         node = scenario.node_profiles[stage_id]
         try:
-            simulator.predict_task(
+            prediction = simulator.predict_task(
                 task=node.task_profile,
                 resource_id=resource_id,
                 batch_size=batch_size,
@@ -140,6 +256,10 @@ def _single_backend_assignment(
             raise ValueError(
                 f"No support-safe resource for stage '{stage_id}' on backend '{backend}': {exc}"
             ) from exc
+        if prediction.used_fallback:
+            raise ValueError(
+                f"No support-safe resource for stage '{stage_id}' on backend '{backend}': predicted execution requires explicit fallback partitions."
+            )
         assignment[stage_id] = resource_id
     return assignment
 
@@ -172,7 +292,7 @@ def _current_deployed_assignment(
             resource_id = npu_resource_id
         node = scenario.node_profiles[stage_id]
         try:
-            simulator.predict_task(
+            prediction = simulator.predict_task(
                 task=node.task_profile,
                 resource_id=resource_id,
                 batch_size=batch_size,
@@ -183,6 +303,10 @@ def _current_deployed_assignment(
             raise ValueError(
                 f"current_deployed_plan has no support-safe resource for stage '{stage_id}' on '{resource_id}': {exc}"
             ) from exc
+        if prediction.used_fallback:
+            raise ValueError(
+                f"current_deployed_plan has no support-safe resource for stage '{stage_id}' on '{resource_id}': predicted execution requires explicit fallback partitions."
+            )
         assignment[stage_id] = resource_id
     return assignment
 
@@ -194,6 +318,7 @@ def _stage_greedy_assignment(
     batch_size: int,
     current_temp_c: Mapping[str, float],
     utilizations: Mapping[str, float],
+    allow_fallback: bool = False,
 ) -> dict[str, str]:
     assignment: dict[str, str] = {}
     for stage_id in scenario.workflow.topological_order():
@@ -203,6 +328,7 @@ def _stage_greedy_assignment(
             batch_size=batch_size,
             current_temp_c=current_temp_c,
             utilizations=utilizations,
+            allow_fallback=allow_fallback,
         )[0]
     return assignment
 
@@ -214,6 +340,7 @@ def _static_best_map_assignment(
     batch_size: int,
     current_temp_c: Mapping[str, float],
     utilizations: Mapping[str, float],
+    allow_fallback: bool = False,
 ) -> dict[str, str]:
     stage_order = scenario.workflow.topological_order()
     feasible_resource_lists = [
@@ -225,6 +352,7 @@ def _static_best_map_assignment(
                 batch_size=batch_size,
                 current_temp_c=current_temp_c,
                 utilizations=utilizations,
+                allow_fallback=allow_fallback,
             )
         )
         for stage_id in stage_order
@@ -278,6 +406,7 @@ def _best_resource_for_stage(
     batch_size: int,
     current_temp_c: Mapping[str, float],
     utilizations: Mapping[str, float],
+    allow_fallback: bool = False,
 ) -> tuple[str, HardwarePrediction]:
     feasible = _feasible_resources_for_stage(
         node,
@@ -285,6 +414,7 @@ def _best_resource_for_stage(
         batch_size=batch_size,
         current_temp_c=current_temp_c,
         utilizations=utilizations,
+        allow_fallback=allow_fallback,
     )
     if not feasible:
         raise ValueError(f"Stage '{node.stage_id}' has no support-safe resource.")
@@ -305,6 +435,7 @@ def _feasible_resources_for_stage(
     batch_size: int,
     current_temp_c: Mapping[str, float],
     utilizations: Mapping[str, float],
+    allow_fallback: bool = False,
 ) -> list[tuple[str, HardwarePrediction]]:
     feasible: list[tuple[str, HardwarePrediction]] = []
     for resource_id in simulator.resource_ids():
@@ -317,6 +448,8 @@ def _feasible_resources_for_stage(
                 utilizations=utilizations,
             )
         except ValueError:
+            continue
+        if prediction.used_fallback and not allow_fallback:
             continue
         feasible.append((resource_id, prediction))
     return feasible
