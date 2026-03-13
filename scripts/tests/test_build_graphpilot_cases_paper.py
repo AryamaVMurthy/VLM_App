@@ -70,8 +70,11 @@ class BuildGraphPilotCasesPaperTest(unittest.TestCase):
             checkpoint_manifest = root / "checkpoint_summary.json"
             figure_summary = root / "figure_summary.json"
             template_dir = root / "template"
+            markdown_dir = root / "markdown"
             figures_dir = root / "figure_bundle"
             figures_dir.mkdir()
+            markdown_sections = markdown_dir / "sections"
+            markdown_sections.mkdir(parents=True)
             png_blob = (
                 b"\x89PNG\r\n\x1a\n"
                 b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
@@ -81,9 +84,20 @@ class BuildGraphPilotCasesPaperTest(unittest.TestCase):
             for name in (
                 "workflow_primary_results.png",
                 "sim_real_calibration.png",
+                "sustained_detail.png",
+                "sustained_overview.png",
                 "architecture_overview.png",
                 "offline_online_split.png",
                 "workload_universe_coverage.png",
+                "backend_affinity_matrix.png",
+                "support_safe_feasibility.png",
+                "calibration_family_mae.png",
+                "backend_launch_overhead.png",
+                "backend_contention_scale.png",
+                "proxy_baseline_comparison.png",
+                "memory_kv_overview.png",
+                "knob_frontier_overview.png",
+                "calibration_overview.png",
                 "evaluation_overview.png",
                 "sensitivity_overview.png",
                 "continuous_stream_results.png",
@@ -127,6 +141,17 @@ class BuildGraphPilotCasesPaperTest(unittest.TestCase):
                             str(figures_dir / "sim_real_calibration.png"),
                             str(figures_dir / "workflow_primary_results.png"),
                             str(figures_dir / "continuous_stream_results.png"),
+                            str(figures_dir / "sustained_detail.png"),
+                            str(figures_dir / "sustained_overview.png"),
+                            str(figures_dir / "backend_affinity_matrix.png"),
+                            str(figures_dir / "support_safe_feasibility.png"),
+                            str(figures_dir / "calibration_family_mae.png"),
+                            str(figures_dir / "backend_launch_overhead.png"),
+                            str(figures_dir / "backend_contention_scale.png"),
+                            str(figures_dir / "proxy_baseline_comparison.png"),
+                            str(figures_dir / "memory_kv_overview.png"),
+                            str(figures_dir / "knob_frontier_overview.png"),
+                            str(figures_dir / "calibration_overview.png"),
                             str(figures_dir / "baseline_comparison.png"),
                             str(figures_dir / "ablation_breakdown.png"),
                             str(figures_dir / "fallback_penalty.png"),
@@ -156,6 +181,29 @@ class BuildGraphPilotCasesPaperTest(unittest.TestCase):
                 "\\LoadClass{article}\n",
                 encoding="utf-8",
             )
+            (markdown_sections / "01_abstract.md").write_text(
+                "GraphPilot-Edge keeps the paper source in markdown first.\n",
+                encoding="utf-8",
+            )
+            (markdown_sections / "02_introduction.md").write_text(
+                "# Introduction\n\n"
+                "A concise markdown-first paper section.\n\n"
+                "```latex\n"
+                "\\begin{figure}[t]\n"
+                "\\centering\n"
+                "\\includegraphics[width=0.45\\textwidth]{figures/workflow_primary_results.png}\n"
+                "\\caption{Primary workflow figure.}\n"
+                "\\label{fig:test_primary}\n"
+                "\\end{figure}\n"
+                "```\n",
+                encoding="utf-8",
+            )
+            (markdown_sections / "03_conclusion.md").write_text(
+                "# Conclusion\n\n"
+                "- calibrated simulator\n"
+                "- support-safe runtime\n",
+                encoding="utf-8",
+            )
 
             rc = module.main(
                 [
@@ -163,6 +211,8 @@ class BuildGraphPilotCasesPaperTest(unittest.TestCase):
                     str(checkpoint_manifest),
                     "--figure-summary",
                     str(figure_summary),
+                    "--markdown-dir",
+                    str(markdown_dir),
                     "--template-dir",
                     str(template_dir),
                     "--output-root",
@@ -174,27 +224,45 @@ class BuildGraphPilotCasesPaperTest(unittest.TestCase):
             summary_path = next((root / "paper_out").glob("graphpilot_cases_*/summary.json"))
             payload = json.loads(summary_path.read_text(encoding="utf-8"))
             self.assertTrue(pathlib.Path(payload["paper_pdf"]).exists())
+            self.assertTrue(pathlib.Path(payload["paper_markdown"]).exists())
+            self.assertEqual(payload["markdown_dir"], str(markdown_dir.resolve()))
+            self.assertTrue(payload["markdown_section_files"])
             self.assertTrue(
                 {
-                    "abstract.tex",
-                    "algorithms.tex",
-                    "conclusion.tex",
-                    "discussion.tex",
-                    "evaluation.tex",
-                    "introduction.tex",
-                    "prototype_anchor.tex",
-                    "related_work.tex",
-                    "simulator.tex",
-                    "system_design.tex",
-                    "workloads.tex",
+                    "01_abstract.tex",
+                    "02_introduction.tex",
+                    "03_conclusion.tex",
                 }.issubset({pathlib.Path(path).name for path in payload["section_files"]})
             )
             main_tex = (summary_path.parent / "main.tex").read_text(encoding="utf-8")
-            self.assertIn("\\input{sections/system_design}", main_tex)
-            self.assertIn("\\includegraphics", main_tex)
+            self.assertIn("\\input{sections/02_introduction}", main_tex)
+            self.assertIn("\\usepackage{float}", main_tex)
+            self.assertNotIn("\\usepackage{balance}", main_tex)
+            self.assertNotIn("\\balance", main_tex)
+            self.assertIn("\\FloatBarrier", main_tex)
+            self.assertNotIn("\\clearpage", main_tex)
+            intro_tex = (summary_path.parent / "sections" / "02_introduction.tex").read_text(encoding="utf-8")
+            self.assertIn("\\includegraphics", intro_tex)
             self.assertEqual(payload["figure_summary"], str(figure_summary.resolve()))
             self.assertIsInstance(payload["page_count"], int)
             self.assertGreaterEqual(payload["page_count"], 1)
+
+    def test_build_markdown_context_shortens_path_references(self) -> None:
+        module = load_module()
+
+        context = module.build_markdown_context(
+            pathlib.Path("/tmp/checkpoints/graphpilot_checkpoint_test/summary.json"),
+            {
+                "truth_source_pdf": "/tmp/truth/Truth-docs/graphpilot_edge_revision_report.pdf",
+            },
+            {},
+            {},
+            {},
+            {},
+        )
+
+        self.assertEqual(context["TRUTH_SOURCE_REF"], "Truth-docs/graphpilot_edge_revision_report.pdf")
+        self.assertEqual(context["CHECKPOINT_MANIFEST_REF"], "graphpilot_checkpoint_test/summary.json")
 
 
 if __name__ == "__main__":

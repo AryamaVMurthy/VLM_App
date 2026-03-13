@@ -51,6 +51,12 @@ class BuildGraphPilotCasesFiguresTest(unittest.TestCase):
             calibration_summary.write_text(
                 json.dumps(
                     {
+                        "calibration_quality_by_family": {
+                            "asr": {"mean_absolute_error_ms": 320.0, "max_absolute_error_ms": 320.0, "sample_count": 1},
+                            "vlm": {"mean_absolute_error_ms": 1800.0, "max_absolute_error_ms": 2400.0, "sample_count": 2},
+                        },
+                        "launch_overhead_ms_by_backend": {"cpu": 119.0, "gpu": 0.0, "npu": 0.0},
+                        "contention_scale_by_backend": {"cpu": 1.8, "gpu": 1.1, "npu": 29.7},
                         "comparisons": [
                             {
                                 "workflow_id": "workflow_a_voice_only",
@@ -68,12 +74,31 @@ class BuildGraphPilotCasesFiguresTest(unittest.TestCase):
                         "baseline_comparisons": {
                             "compound_workloads": [
                                 {
+                                    "baselines": [
+                                        {"baseline_id": "current_deployed_plan", "status": "ok", "score_ms": 6400.0},
+                                        {"baseline_id": "stage_greedy", "status": "ok", "score_ms": 6200.0},
+                                    ],
+                                    "graphpilot_score_ms": 6000.0,
                                     "workload_id": "compound.workflow_a.default",
                                     "graphpilot_margin_vs_best_other_ms": -120.0,
                                 }
                             ],
+                            "model_family": [
+                                {
+                                    "baselines": [
+                                        {"baseline_id": "twill_like", "status": "ok", "score_ms": 14400.0},
+                                        {"baseline_id": "agent_xpu_like", "status": "ok", "score_ms": 13500.0},
+                                    ],
+                                    "graphpilot_score_ms": 12000.0,
+                                    "workload_id": "model.llm.long_long",
+                                }
+                            ],
                             "continuous_workloads": [
                                 {
+                                    "baselines": [
+                                        {"baseline_id": "no_pipeline", "status": "ok", "score_ms": 101500.0},
+                                        {"baseline_id": "no_memory_kv", "status": "ok", "score_ms": 104200.0},
+                                    ],
                                     "workload_id": "continuous.workflow_a.poisson",
                                     "graphpilot_score_ms": 93864.0,
                                     "best_other_score_ms": 100160.0,
@@ -89,6 +114,22 @@ class BuildGraphPilotCasesFiguresTest(unittest.TestCase):
                                     "delta_ms": 147.0,
                                 }
                             ]
+                        },
+                        "knob_frontiers": {
+                            "llm": [
+                                {"context_cap": 1024, "max_output_tokens": 64, "quality_proxy_loss": 0.3, "score_ms": 15000.0},
+                                {"context_cap": 4096, "max_output_tokens": 192, "quality_proxy_loss": 0.0, "score_ms": 36000.0},
+                            ]
+                        },
+                        "memory_kv_curves": {
+                            "kv_curve": [
+                                {"cached_tokens": 256.0, "kv_bytes": 37748736.0},
+                                {"cached_tokens": 1024.0, "kv_bytes": 150994944.0},
+                            ],
+                            "llm_context_curve": [
+                                {"context_tokens": 256.0, "aggregate_memory_bytes": 32636928.0},
+                                {"context_tokens": 1024.0, "aggregate_memory_bytes": 89260032.0},
+                            ],
                         },
                     }
                 ),
@@ -137,7 +178,65 @@ class BuildGraphPilotCasesFiguresTest(unittest.TestCase):
                             "characterization_summary": str(characterization_summary),
                             "experiment_summary": str(experiment_summary),
                             "workload_registry": str(workload_registry),
+                            "backend_matrix": str(root / "backend_matrix.json"),
+                            "sustained_summary": str(root / "sustained_summary.json"),
                         }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "backend_matrix.json").write_text(
+                json.dumps(
+                    {
+                        "stages": [
+                            {
+                                "stage_id": "vlm.fastvlm.primary",
+                                "backends": {
+                                    "cpu": {"status": "feasible_smoke_pass"},
+                                    "gpu": {"status": "infeasible_no_backend_adapter"},
+                                    "npu": {"status": "known_working"},
+                                },
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "sustained_summary.json").write_text(
+                json.dumps(
+                    {
+                        "samples": [
+                            {
+                                "sample_index": 0,
+                                "workflow_id": "workflow_a_voice_only",
+                                "warm_latency_ms": 10091,
+                                "thermal_after": {
+                                    "max_cpu_c": 48.1,
+                                    "max_npu_c": 45.2,
+                                    "skin_c": 37.8,
+                                },
+                            },
+                            {
+                                "sample_index": 1,
+                                "workflow_id": "workflow_b_voice_vision",
+                                "warm_latency_ms": 15742,
+                                "thermal_after": {
+                                    "max_cpu_c": 49.5,
+                                    "max_npu_c": 46.7,
+                                    "skin_c": 38.2,
+                                },
+                            },
+                            {
+                                "sample_index": 2,
+                                "workflow_id": "workflow_a_voice_only",
+                                "warm_latency_ms": 10144,
+                                "thermal_after": {
+                                    "max_cpu_c": 49.3,
+                                    "max_npu_c": 46.0,
+                                    "skin_c": 38.0,
+                                },
+                            },
+                        ]
                     }
                 ),
                 encoding="utf-8",
@@ -162,7 +261,27 @@ class BuildGraphPilotCasesFiguresTest(unittest.TestCase):
                 "offline_online_split.png",
                 "workload_universe_coverage.svg",
                 "workload_universe_coverage.png",
+                "backend_affinity_matrix.svg",
+                "backend_affinity_matrix.png",
+                "support_safe_feasibility.svg",
+                "support_safe_feasibility.png",
+                "calibration_family_mae.svg",
+                "calibration_family_mae.png",
+                "backend_launch_overhead.svg",
+                "backend_launch_overhead.png",
+                "backend_contention_scale.svg",
+                "backend_contention_scale.png",
+                "proxy_baseline_comparison.svg",
+                "proxy_baseline_comparison.png",
+                "memory_kv_overview.svg",
+                "memory_kv_overview.png",
+                "knob_frontier_overview.svg",
+                "knob_frontier_overview.png",
+                "calibration_overview.svg",
+                "calibration_overview.png",
+                "evaluation_overview.svg",
                 "evaluation_overview.png",
+                "sensitivity_overview.svg",
                 "sensitivity_overview.png",
                 "sim_real_calibration.svg",
                 "sim_real_calibration.png",
@@ -180,10 +299,62 @@ class BuildGraphPilotCasesFiguresTest(unittest.TestCase):
                 "thermal_plan_bank.png",
                 "objective_sensitivity.svg",
                 "objective_sensitivity.png",
+                "sustained_latency_drift.svg",
+                "sustained_latency_drift.png",
+                "sustained_thermal_drift.svg",
+                "sustained_thermal_drift.png",
+                "sustained_detail.svg",
+                "sustained_detail.png",
+                "sustained_overview.svg",
+                "sustained_overview.png",
                 "tables.tex",
             ):
                 self.assertTrue((summary_path.parent / name).exists(), msg=name)
             self.assertEqual(payload["checkpoint_manifest"], str(checkpoint_manifest.resolve()))
+
+    def test_baseline_delta_rows_use_explicit_baseline_scores(self) -> None:
+        module = load_module()
+        characterization_summary = {
+            "baseline_comparisons": {
+                "compound_workloads": [
+                    {
+                        "workload_id": "compound.workflow_a.default",
+                        "graphpilot_score_ms": 6000.0,
+                        "baselines": [
+                            {"baseline_id": "current_deployed_plan", "status": "ok", "score_ms": 6400.0},
+                            {"baseline_id": "stage_greedy", "status": "ok", "score_ms": 6200.0},
+                        ],
+                    }
+                ]
+            }
+        }
+
+        rows = module.build_baseline_delta_rows(characterization_summary)
+
+        self.assertTrue(rows)
+        self.assertIn(("compound.workflow_a.default :: current_deployed_plan", 400.0), rows)
+
+    def test_proxy_baseline_rows_capture_method_class_deltas(self) -> None:
+        module = load_module()
+        characterization_summary = {
+            "baseline_comparisons": {
+                "model_family": [
+                    {
+                        "workload_id": "model.llm.long_long",
+                        "graphpilot_score_ms": 12000.0,
+                        "baselines": [
+                            {"baseline_id": "twill_like", "status": "ok", "score_ms": 14400.0},
+                            {"baseline_id": "agent_xpu_like", "status": "ok", "score_ms": 13500.0},
+                        ],
+                    }
+                ]
+            }
+        }
+
+        rows = module.build_proxy_baseline_rows(characterization_summary)
+
+        self.assertTrue(rows)
+        self.assertIn(("model.llm.long_long :: twill_like", 2400.0), rows)
 
     def test_signed_bar_rendering_supports_negative_and_positive_values(self) -> None:
         module = load_module()

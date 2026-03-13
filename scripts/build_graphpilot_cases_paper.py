@@ -7,6 +7,7 @@ import argparse
 import json
 import shutil
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from textwrap import dedent
@@ -14,9 +15,15 @@ from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT_DIR = SCRIPT_DIR.parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from graphpilot_cases_markdown import render_markdown_bundle
+
 ARTIFACT_ROOT = ROOT_DIR / "artifacts" / "graphpilot_edge"
 DEFAULT_OUTPUT_ROOT = ARTIFACT_ROOT / "papers"
 DEFAULT_TEMPLATE_DIR = ROOT_DIR / "papers" / "templates" / "ieee"
+DEFAULT_MARKDOWN_DIR = ROOT_DIR / "papers" / "graphpilot_cases_markdown"
 REQUIRED_PACK_KEYS = (
     "report",
     "paper_tables",
@@ -27,11 +34,22 @@ REQUIRED_FIGURE_NAMES = (
     "architecture_overview.png",
     "offline_online_split.png",
     "workload_universe_coverage.png",
+    "backend_affinity_matrix.png",
+    "support_safe_feasibility.png",
+    "calibration_family_mae.png",
+    "backend_launch_overhead.png",
+    "backend_contention_scale.png",
+    "proxy_baseline_comparison.png",
+    "memory_kv_overview.png",
+    "knob_frontier_overview.png",
+    "calibration_overview.png",
     "evaluation_overview.png",
     "sensitivity_overview.png",
     "sim_real_calibration.png",
     "workflow_primary_results.png",
     "continuous_stream_results.png",
+    "sustained_detail.png",
+    "sustained_overview.png",
     "baseline_comparison.png",
     "ablation_breakdown.png",
     "fallback_penalty.png",
@@ -201,18 +219,21 @@ def build_pdf_if_possible(paper_dir: Path) -> Path:
                 "pdflatex failed while building the CASES paper. "
                 f"stdout:\n{completed.stdout}\n\nstderr:\n{completed.stderr}"
             )
-    bib_completed = subprocess.run(
-        [bibtex, "main"],
-        cwd=paper_dir,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if bib_completed.returncode != 0:
-        raise RuntimeError(
-            "bibtex failed while building the CASES paper. "
-            f"stdout:\n{bib_completed.stdout}\n\nstderr:\n{bib_completed.stderr}"
+    tex_inputs = [paper_dir / "main.tex", *sorted((paper_dir / "sections").glob("*.tex"))]
+    needs_bibtex = any("\\cite" in path.read_text(encoding="utf-8") for path in tex_inputs if path.exists())
+    if needs_bibtex:
+        bib_completed = subprocess.run(
+            [bibtex, "main"],
+            cwd=paper_dir,
+            capture_output=True,
+            text=True,
+            check=False,
         )
+        if bib_completed.returncode != 0:
+            raise RuntimeError(
+                "bibtex failed while building the CASES paper. "
+                f"stdout:\n{bib_completed.stdout}\n\nstderr:\n{bib_completed.stderr}"
+            )
     for _ in range(2):
         completed = subprocess.run(
             [pdflatex, "-interaction=nonstopmode", "-halt-on-error", "main.tex"],
@@ -292,6 +313,12 @@ def fmt_num(value: Any, precision: int = 1) -> str:
     return f"{float(value):.{precision}f}"
 
 
+def bytes_to_mib(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return float(value) / (1024.0 * 1024.0)
+
+
 def paper_ref_label(value: Any) -> str:
     if value is None:
         return "N/A"
@@ -346,14 +373,20 @@ def make_feasibility_table(backend_matrix: dict[str, Any] | None) -> str:
         "tts.primary": "TTS",
     }
     rows = []
+    status_labels = {
+        "feasible_smoke_pass": "smoke-pass",
+        "known_working": "known-working",
+        "infeasible_smoke_fail": "smoke-fail",
+        "infeasible_no_backend_adapter": "adapter-miss",
+    }
     for stage_id in stage_ids:
         stage = find_stage(backend_matrix, stage_id)
         if stage is None:
             rows.append(f"{stage_labels[stage_id]} & N/A & N/A & N/A \\\\")
             continue
-        cpu = stage["backends"].get("cpu", {}).get("status", "N/A")
-        gpu = stage["backends"].get("gpu", {}).get("status", "N/A")
-        npu = stage["backends"].get("npu", {}).get("status", "N/A")
+        cpu = status_labels.get(stage["backends"].get("cpu", {}).get("status", "N/A"), stage["backends"].get("cpu", {}).get("status", "N/A"))
+        gpu = status_labels.get(stage["backends"].get("gpu", {}).get("status", "N/A"), stage["backends"].get("gpu", {}).get("status", "N/A"))
+        npu = status_labels.get(stage["backends"].get("npu", {}).get("status", "N/A"), stage["backends"].get("npu", {}).get("status", "N/A"))
         rows.append(
             f"{stage_labels[stage_id]} & {latex_escape(cpu)} & {latex_escape(gpu)} & {latex_escape(npu)} \\\\")
     return "\n".join(
@@ -435,6 +468,17 @@ def make_calibration_table(calibration_summary: dict[str, Any] | None) -> str:
 
 
 def make_baseline_table(characterization_summary: dict[str, Any] | None) -> str:
+    workload_labels = {
+        "compound.workflow_c.default": "compound.C.default",
+        "continuous.workflow_a.poisson": "cont.A.poisson",
+        "continuous.mixed_foreground_background": "cont.fg_bg",
+        "stress.workflow_c.fallback_penalty": "stress.C.fallback",
+    }
+    policy_labels = {
+        "static_best_map": "static",
+        "stage_greedy": "greedy",
+        "current_deployed_plan": "current",
+    }
     if not characterization_summary:
         rows = ["No pinned characterization data & N/A & N/A & N/A \\\\"]
     else:
@@ -454,9 +498,10 @@ def make_baseline_table(characterization_summary: dict[str, Any] | None) -> str:
         rows = []
         for entry in selected:
             rows.append(
-                f"{latex_escape(entry['workload_id'])} & {latex_escape(entry.get('graphpilot_policy', 'N/A'))} & "
+                f"{latex_escape(workload_labels.get(entry['workload_id'], entry['workload_id']))} & "
+                f"{latex_escape(policy_labels.get(entry.get('graphpilot_policy', 'N/A'), entry.get('graphpilot_policy', 'N/A')))} & "
                 f"{fmt_num(entry.get('graphpilot_score_ms'), 1)} & "
-                f"{latex_escape(entry.get('best_other_baseline_id', 'N/A'))} / {fmt_num(entry.get('best_other_score_ms'), 1)} \\\\")
+                f"{latex_escape(policy_labels.get(entry.get('best_other_baseline_id', 'N/A'), entry.get('best_other_baseline_id', 'N/A')))} / {fmt_num(entry.get('best_other_score_ms'), 1)} \\\\")
         if not rows:
             rows = ["No representative workload rows found & N/A & N/A & N/A \\\\"]
     return "\n".join(
@@ -465,9 +510,10 @@ def make_baseline_table(characterization_summary: dict[str, Any] | None) -> str:
             "\\centering",
             "\\caption{Representative baseline comparisons from the broader workload universe.}",
             "\\label{tab:baseline-snapshot}",
-            "\\begin{tabular}{p{1.55in}p{0.9in}rr}",
+            "\\scriptsize",
+            "\\begin{tabular}{p{1.25in}p{0.55in}rr}",
             "\\toprule",
-            "Workload & GraphPilot policy & GraphPilot & Best other \\\\",
+            "Workload & Policy & GraphPilot & Best other \\\\",
             "\\midrule",
             *rows,
             "\\bottomrule",
@@ -533,6 +579,53 @@ def make_tuning_table(tuning_summary: dict[str, Any] | None) -> str:
     )
 
 
+def parse_structured_log_line(line: str | None) -> dict[str, str]:
+    if not line:
+        return {}
+    parsed: dict[str, str] = {}
+    for token in line.split():
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        parsed[key] = value
+    return parsed
+
+
+def make_memory_runtime_table(memory_summary: dict[str, Any] | None) -> str:
+    rows = []
+    for label, key in (
+        ("Admit", "latest_admit_line"),
+        ("Degrade", "latest_degrade_line"),
+        ("Reject", "latest_reject_line"),
+        ("Queued", "latest_queue_metrics_line"),
+    ):
+        parsed = parse_structured_log_line((memory_summary or {}).get(key))
+        required_bytes = parsed.get("effective_required_bytes") or parsed.get("memory_effective_required_bytes")
+        queue_wait_ms = parsed.get("queue_wait_ms", "0")
+        action = parsed.get("applied_actions", parsed.get("memory_decision", "none"))
+        responder_tokens = parsed.get("effective_responder_max_tokens", "-")
+        rows.append(
+            f"{label} & {fmt_num(bytes_to_mib(float(required_bytes)), 1) if required_bytes not in (None, '', '-') else 'N/A'} & "
+            f"{latex_escape(queue_wait_ms)} & {latex_escape(action)} & {latex_escape(responder_tokens)} \\\\"
+        )
+    return "\n".join(
+        [
+            "\\begin{table}[t]",
+            "\\centering",
+            "\\caption{Checkpoint-pinned runtime memory/KV control events.}",
+            "\\label{tab:memory-runtime}",
+            "\\begin{tabular}{lrrll}",
+            "\\toprule",
+            "Decision & Eff. MiB & Queue wait (ms) & Action & Resp. max toks \\\\",
+            "\\midrule",
+            *rows,
+            "\\bottomrule",
+            "\\end{tabular}",
+            "\\end{table}",
+        ]
+    )
+
+
 def make_comparison_matrix_table() -> str:
     rows = [
         "Heterogeneous mobile SoC & yes & yes & -- & yes & yes & yes \\\\",
@@ -546,11 +639,13 @@ def make_comparison_matrix_table() -> str:
     ]
     return "\n".join(
         [
-            "\\begin{table*}[t]",
+            "\\begin{table}[H]",
             "\\centering",
-            "\\small",
+            "\\scriptsize",
             "\\caption{Comparison matrix used to position GraphPilot-Edge against adjacent method classes.}",
             "\\label{tab:comparison-matrix}",
+            "\\setlength{\\tabcolsep}{2.4pt}",
+            "\\resizebox{\\columnwidth}{!}{%",
             "\\begin{tabular}{lcccccc}",
             "\\toprule",
             "Property & HEFT/CPOP & Band/ADMS & Orca/vLLM & Puzzle/Twill & Agent.xpu/HeRo & GraphPilot \\\\",
@@ -558,38 +653,39 @@ def make_comparison_matrix_table() -> str:
             *rows,
             "\\bottomrule",
             "\\end{tabular}",
-            "\\end{table*}",
+            "}",
+            "\\end{table}",
         ]
     )
 
 
 def make_ablation_matrix_table() -> str:
     rows = [
-        "NoFallbackAware & fallback partition and copy penalties & attractive accelerator plans become unrealistically cheap; sim-to-real error rises \\\\",
-        "NoPrefillDecodeSplit & separate text-stage modeling & backend choice for short vs. long responses collapses \\\\",
-        "NoPipeline & CHUNK/TOKEN edge exploitation & TTFS regresses most strongly on streaming workloads \\\\",
-        "NoBranchOverlap & VLM $\\parallel$ retrieval overlap & workflow-C end-to-end latency and idle time both increase \\\\",
-        "NoMemoryReuse & interval-based buffer allocator & peak memory rises and admissible concurrency drops \\\\",
-        "NoKVAdmission & explicit KV budget logic & burst traces show reject storms or uncontrolled TTFS spikes \\\\",
-        "NoThermalBank & plan-bank switching/hysteresis & sustained runs drift away from the initially best plan \\\\",
-        "NoKnobTuning & stage-specific visual/token/chunk knobs & robustness across workload families degrades \\\\",
-        "NoFirstOutputBias & TTFS-aware dispatch terms & throughput may improve while perceived responsiveness worsens \\\\",
+        "NoFallbackAware & offload looks unrealistically cheap; sim-to-real error rises \\\\",
+        "NoPrefillDecodeSplit & short-vs-long responder backend choice collapses \\\\",
+        "NoPipeline & TTFS regresses most strongly on streaming workloads \\\\",
+        "NoBranchOverlap & workflow-C latency rises when VLM and retrieval stop overlapping \\\\",
+        "NoMemoryReuse & peak memory rises and admissible concurrency drops \\\\",
+        "NoKVAdmission & burst traces show reject storms or uncontrolled TTFS spikes \\\\",
+        "NoThermalBank & sustained runs drift away from the initially best plan \\\\",
+        "NoKnobTuning & robustness across workload families degrades \\\\",
+        "NoFirstOutputBias & throughput can improve while perceived responsiveness worsens \\\\",
     ]
     return "\n".join(
         [
-            "\\begin{table*}[t]",
+            "\\begin{table}[H]",
             "\\centering",
-            "\\small",
-            "\\caption{Ablation matrix used to interpret causal value in the CASES paper.}",
+            "\\scriptsize",
+            "\\caption{Compact ablation matrix used to interpret causal value in the CASES paper.}",
             "\\label{tab:ablation-matrix}",
-            "\\begin{tabular}{p{1.45in}p{1.55in}p{3.35in}}",
+            "\\begin{tabularx}{\\columnwidth}{p{1.18in}X}",
             "\\toprule",
-            "Ablation & Removed component & Expected effect if the design matters \\\\",
+            "Ablation & Expected effect if the design matters \\\\",
             "\\midrule",
             *rows,
             "\\bottomrule",
-            "\\end{tabular}",
-            "\\end{table*}",
+            "\\end{tabularx}",
+            "\\end{table}",
         ]
     )
 
@@ -622,19 +718,19 @@ def make_baseline_catalog_table(baseline_registry: dict[str, Any] | None) -> str
     ] or ["No pinned baseline registry & N/A \\\\"]
     return "\n".join(
         [
-            "\\begin{table*}[t]",
+            "\\begin{table}[H]",
             "\\centering",
-            "\\small",
+            "\\scriptsize",
             "\\caption{Baseline catalog used in the CASES comparison section.}",
             "\\label{tab:baseline-catalog}",
-            "\\begin{tabular}{p{1.6in}p{4.7in}}",
+            "\\begin{tabularx}{\\columnwidth}{>{\\raggedright\\arraybackslash}p{0.95in}X}",
             "\\toprule",
             "Baseline ID & Intent within the shared GraphPilot environment \\\\",
             "\\midrule",
             *rows,
             "\\bottomrule",
-            "\\end{tabular}",
-            "\\end{table*}",
+            "\\end{tabularx}",
+            "\\end{table}",
         ]
     )
 
@@ -1292,57 +1388,114 @@ def write_references(path: Path) -> None:
     )
 
 
-def write_main_tex(path: Path) -> None:
-    path.write_text(
-        dedent(
-            """
+def workload_metric(experiment_summary: dict[str, Any] | None, workflow_id: str, field: str) -> str:
+    actual = (experiment_summary or {}).get("actual_workflows", {})
+    return fmt_ms(actual.get(workflow_id, {}).get(field))
+
+
+def max_family_mae(calibration_summary: dict[str, Any] | None) -> str:
+    quality = (calibration_summary or {}).get("calibration_quality_by_family", {})
+    values = [float(entry.get("mean_absolute_error_ms", 0.0)) for entry in quality.values()]
+    if not values:
+        return "N/A"
+    return fmt_num(max(values), 1)
+
+
+def build_markdown_context(
+    checkpoint_manifest_path: Path,
+    checkpoint_manifest: dict[str, Any],
+    experiment_summary: dict[str, Any] | None,
+    calibration_summary: dict[str, Any] | None,
+    characterization_summary: dict[str, Any] | None,
+    tuning_summary: dict[str, Any] | None,
+) -> dict[str, str]:
+    checkpoint_name = (
+        f"{checkpoint_manifest_path.parent.name}/{checkpoint_manifest_path.name}"
+    )
+    truth_source_raw = str(
+        checkpoint_manifest.get("truth_source_pdf", "Truth-docs/graphpilot_edge_revision_report.pdf")
+    )
+    truth_marker = "Truth-docs/"
+    if truth_marker in truth_source_raw:
+        truth_source_name = truth_source_raw.split(truth_marker, 1)[1]
+        truth_source_name = f"{truth_marker}{truth_source_name}"
+    else:
+        truth_source_name = Path(truth_source_raw).name
+    return {
+        "WORKFLOW_A_WARM_MS": workload_metric(experiment_summary, "workflow_a_voice_only", "warm_latency_ms"),
+        "WORKFLOW_A_TTFT_MS": workload_metric(experiment_summary, "workflow_a_voice_only", "ttft_ms"),
+        "WORKFLOW_A_TTFS_MS": workload_metric(experiment_summary, "workflow_a_voice_only", "tts_first_audio_ms"),
+        "WORKFLOW_B_WARM_MS": workload_metric(experiment_summary, "workflow_b_voice_vision", "warm_latency_ms"),
+        "WORKFLOW_C_WARM_MS": workload_metric(experiment_summary, "workflow_c_voice_vision_retrieval", "warm_latency_ms"),
+        "MAX_FAMILY_MAE_MS": max_family_mae(calibration_summary),
+        "TRUTH_SOURCE_PDF": truth_source_raw,
+        "TRUTH_SOURCE_REF": truth_source_name,
+        "CHECKPOINT_MANIFEST_PATH": str(checkpoint_manifest_path.resolve()),
+        "CHECKPOINT_MANIFEST_REF": checkpoint_name,
+        "WORKFLOW_RESULTS_TABLE_TEX": make_workflow_results_table(experiment_summary),
+        "CALIBRATION_TABLE_TEX": make_calibration_table(calibration_summary),
+        "BASELINE_TABLE_TEX": make_baseline_table(characterization_summary),
+        "FEASIBILITY_TABLE_TEX": make_feasibility_table(load_optional_summary(checkpoint_manifest, "backend_matrix")),
+        "WORKLOAD_TABLE_TEX": make_workload_table(load_optional_summary(checkpoint_manifest, "workload_registry")),
+        "COMPARISON_MATRIX_TABLE_TEX": make_comparison_matrix_table(),
+        "ABLATION_MATRIX_TABLE_TEX": make_ablation_matrix_table(),
+        "BASELINE_CATALOG_TABLE_TEX": make_baseline_catalog_table(load_optional_summary(checkpoint_manifest, "baseline_registry")),
+        "MEMORY_RUNTIME_TABLE_TEX": make_memory_runtime_table(load_optional_summary(checkpoint_manifest, "memory_admission_summary")),
+        "TUNING_TABLE_TEX": make_tuning_table(tuning_summary),
+    }
+
+
+def write_main_tex(path: Path, abstract_section: str, body_sections: list[str]) -> None:
+    body_inputs = "\n".join(rf"\input{{sections/{section}}}" for section in body_sections)
+    template = """
             \\documentclass[conference]{IEEEtran}
             \\usepackage[T1]{fontenc}
             \\usepackage[utf8]{inputenc}
             \\usepackage{graphicx}
             \\usepackage{booktabs}
+            \\usepackage{tabularx}
             \\usepackage{array}
             \\usepackage{amsmath}
-            \\usepackage[section]{placeins}
+            \\usepackage{xcolor}
+            \\usepackage{float}
+            \\usepackage{dblfloatfix}
+            \\usepackage{placeins}
             \\usepackage{url}
             \\usepackage[hidelinks]{hyperref}
+            \\raggedbottom
+            \\setcounter{dbltopnumber}{3}
+            \\renewcommand{\\dbltopfraction}{0.95}
+            \\renewcommand{\\textfraction}{0.05}
+            \\renewcommand{\\floatpagefraction}{0.8}
+            \\renewcommand{\\dblfloatpagefraction}{0.8}
             \\newcommand{\\system}{GraphPilot-Edge}
+            \\graphicspath{{figures/}}
+            \\setlength{\\textfloatsep}{8pt plus 2pt minus 2pt}
+            \\setlength{\\floatsep}{6pt plus 2pt minus 2pt}
+            \\setlength{\\intextsep}{6pt plus 2pt minus 2pt}
+            \\setlength{\\emergencystretch}{1.5em}
 
             \\begin{document}
             \\title{GraphPilot-Edge: A Profiler-Driven Runtime and Calibrated Simulator for Continuous Multimodal Assistant DAGs on Heterogeneous Mobile SoCs}
             \\author{Anonymous Submission}
             \\maketitle
 
-            \\input{sections/abstract}
+            \\begin{abstract}
+            __ABSTRACT_INPUT__
+            \\end{abstract}
 
-            \\begin{figure*}[t]
-            \\centering
-            \\includegraphics[width=0.96\\textwidth]{figures/architecture_overview.png}
-            \\caption{Checkpoint-pinned deployment architecture for the support-safe GraphPilot runtime.}
-            \\label{fig:architecture}
-            \\end{figure*}
+            __BODY_INPUTS__
 
-            \\input{sections/introduction}
-            \\input{sections/prototype_anchor}
-            \\input{sections/differentiation}
-            \\input{sections/system_design}
-            \\input{sections/workloads}
-            \\input{sections/simulator}
-            \\input{sections/algorithms}
-            \\input{sections/methodology}
-            \\input{sections/experiment_matrix}
-            \\input{sections/evaluation}
-            \\input{sections/related_work}
-            \\input{sections/discussion}
-            \\input{sections/limitations}
-            \\input{sections/artifact}
-            \\input{sections/conclusion}
-
+            \\FloatBarrier
             \\bibliographystyle{IEEEtran}
             \\bibliography{references}
             \\end{document}
             """
-        ).strip()
+    path.write_text(
+        dedent(template)
+        .replace("__ABSTRACT_INPUT__", rf"\input{{sections/{abstract_section}}}")
+        .replace("__BODY_INPUTS__", body_inputs)
+        .strip()
         + "\n",
         encoding="utf-8",
     )
@@ -1353,6 +1506,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--checkpoint-manifest", type=Path, required=True)
     parser.add_argument("--artifact-pack-summary", type=Path, default=None)
     parser.add_argument("--figure-summary", type=Path, default=None)
+    parser.add_argument("--markdown-dir", type=Path, default=DEFAULT_MARKDOWN_DIR)
     parser.add_argument("--template-dir", type=Path, default=None)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     return parser.parse_args(argv)
@@ -1401,40 +1555,37 @@ def main(argv: list[str] | None = None) -> int:
     )
     (paper_dir / "tables.tex").write_text(tables_tex, encoding="utf-8")
 
-    section_payloads = {
-        "abstract.tex": build_abstract(checkpoint_manifest, experiment_summary, calibration_summary),
-        "introduction.tex": build_introduction(checkpoint_manifest, experiment_summary),
-        "prototype_anchor.tex": build_prototype_anchor_section(experiment_summary, backend_matrix),
-        "differentiation.tex": build_differentiation_section(),
-        "system_design.tex": build_system_design(experiment_summary, backend_matrix),
-        "workloads.tex": build_workloads_section(workload_registry, baseline_registry),
-        "simulator.tex": build_simulator_section(calibration_summary, characterization_summary),
-        "algorithms.tex": build_algorithms_section(tuning_summary),
-        "methodology.tex": build_methodology_section(
-            checkpoint_manifest,
-            experiment_summary,
-            calibration_summary,
-            characterization_summary,
-        ),
-        "experiment_matrix.tex": build_experiment_matrix_section(),
-        "evaluation.tex": build_evaluation_section(experiment_summary, characterization_summary, memory_summary),
-        "related_work.tex": build_related_work(),
-        "discussion.tex": build_discussion_section(),
-        "limitations.tex": build_limitations(
-            calibration_summary,
-            characterization_summary,
-            required_pack_paths["final_audit_report"].read_text(encoding="utf-8"),
-        ),
-        "artifact.tex": build_artifact_section(checkpoint_manifest),
-        "conclusion.tex": build_conclusion(checkpoint_manifest),
-    }
+    markdown_context = build_markdown_context(
+        args.checkpoint_manifest,
+        checkpoint_manifest,
+        experiment_summary,
+        calibration_summary,
+        characterization_summary,
+        tuning_summary,
+    )
+    markdown_bundle = render_markdown_bundle(args.markdown_dir, context=markdown_context)
+    rendered_markdown_dir = paper_dir / "markdown"
+    rendered_markdown_dir.mkdir(parents=True, exist_ok=False)
+    paper_markdown_path = rendered_markdown_dir / "paper.md"
+    paper_markdown_path.write_text(markdown_bundle.combined_markdown, encoding="utf-8")
+    markdown_section_files = []
+    section_payloads = {}
+    for source in markdown_bundle.section_sources:
+        rendered_markdown_path = rendered_markdown_dir / source.name
+        rendered_markdown_path.write_text(markdown_bundle.section_markdown[source.name], encoding="utf-8")
+        markdown_section_files.append(str(rendered_markdown_path.resolve()))
+        section_payloads[source.with_suffix(".tex").name] = markdown_bundle.section_latex[source.name]
+
     section_files = []
     for name, payload in section_payloads.items():
         target = sections_dir / name
         write_section(target, payload)
         section_files.append(str(target.resolve()))
 
-    write_main_tex(paper_dir / "main.tex")
+    ordered_section_names = list(section_payloads.keys())
+    abstract_section_name = ordered_section_names[0].replace(".tex", "")
+    body_section_names = [name.replace(".tex", "") for name in ordered_section_names[1:]]
+    write_main_tex(paper_dir / "main.tex", abstract_section_name, body_section_names)
     write_references(paper_dir / "references.bib")
 
     pdf_path = build_pdf_if_possible(paper_dir)
@@ -1446,6 +1597,9 @@ def main(argv: list[str] | None = None) -> int:
         "paper_dir": str(paper_dir.resolve()),
         "paper_pdf": str(pdf_path.resolve()),
         "page_count": page_count,
+        "markdown_dir": str(args.markdown_dir.resolve()),
+        "paper_markdown": str(paper_markdown_path.resolve()),
+        "markdown_section_files": markdown_section_files,
         "section_files": section_files,
         "tables_tex": str((paper_dir / "tables.tex").resolve()),
         "figure_files": {name: str((figures_dir / copied_name).resolve()) for name, copied_name in copied_figures.items()},
