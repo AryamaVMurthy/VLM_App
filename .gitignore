@@ -8,7 +8,10 @@ android-app/whisperlib/.cxx/
 local.properties
 
 # Local artifacts and debug dumps
-artifacts/
+/artifacts/*
+!/artifacts/graphpilot_edge/
+/artifacts/graphpilot_edge/*
+!/artifacts/graphpilot_edge/README.md
 *.log
 *.tmp
 *.xml
@@ -24,8 +27,14 @@ artifacts/models/
 
 # Nested third-party repository metadata snapshots
 **/.git.hidden/
+third_party/litert/artifacts/
 
 # Keep published installable artifacts in-repo
 !apk/
 !apk/*.apk
 !apk/*.sha256
+
+# Local developer environments
+.venv/
+tmp/
+__pycache__/

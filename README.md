@@ -1,81 +1,87 @@
-# FastVLM Voice (CPU-Only Android)
+# GraphPilot-Edge
 
-On-device voice assistant pipeline for Android:
+GraphPilot-Edge is a profiler-driven runtime, calibrated simulator, and artifact surface for continuous multimodal assistant DAGs on heterogeneous mobile SoCs.
 
-`STT (Whisper.cpp) -> VLM (FastVLM LiteRT) -> TTS (Android native)`
+The repository now contains three aligned surfaces:
+- the deployed Android runtime under `android-app/`
+- the offline planner / simulator / calibration code under `graphpilot_edge/`
+- the checkpoint-pinned evidence surface under `artifacts/graphpilot_edge/`
 
-This repository is configured for **CPU-only** inference in app flow.
+This repo does **not** use directory reshuffles or moving artifact outputs as a cleanup strategy. Canonical checkpoint, report, and paper paths are part of the audited evidence surface and should remain stable.
 
-## What Works
+## Current Verified Scope
 
-- Camera-first full-screen UI with hold-to-speak mic interaction.
-- Live local STT transcription while speaking.
-- FastVLM visual question answering from camera frame + transcribed text.
-- Streaming answer tokens from VLM.
-- Streaming native Android TTS playback (starts before full VLM completion).
-- Barge-in behavior: new hold-to-speak interrupts active TTS.
-- Metrics logging for transition latency and stage timing.
+The current verified GraphPilot-Edge system anchors on three support-safe workflows:
+- Workflow A: `ASR -> planner -> responder -> TTS`
+- Workflow B: `ASR -> planner -> VLM -> responder -> TTS`
+- Workflow C: `ASR -> planner -> (VLM || retrieval) -> responder -> TTS`
 
-## Offline Behavior
+Current mainline deployment facts:
+- FastVLM remains on LiteRT NPU.
+- Text, retrieval, and speech stages remain on support-safe CPU paths unless a stronger backend path is explicitly validated.
+- Silent fallback is not counted as successful acceleration.
 
-- First app run requires internet on device to download:
-  - FastVLM model (`FastVLM-0.5B.litertlm`)
-  - Whisper model (`ggml-tiny.en-q8_0.bin`)
-- After successful first download, the app runs offline (no laptop, no internet required).
-- Fresh install without internet fails fast with explicit provisioning error.
+## Canonical Outputs
 
-## Requirements
+Use these pinned outputs as the current repo truth surface:
+- CASES paper PDF: `artifacts/graphpilot_edge/papers/graphpilot_cases_20260312_195225/main.pdf`
+- Current checkpoint summary: `artifacts/graphpilot_edge/checkpoints/graphpilot_checkpoint_20260312_195112/summary.json`
+- Current artifact pack summary: `artifacts/graphpilot_edge/reports/artifact_pack_20260312_195226/summary.json`
+- Revision scope boundary: `Truth-docs/graphpilot_edge_revision_report.pdf`
 
-- Android 15 / SDK 35 device (tested on SM8750P target device).
-- `arm64-v8a` ABI.
-- Camera + microphone permissions.
+## Start Here
 
-## Build
+- Navigation index: `docs/INDEX.md`
+- Repo layout and path-stability rules: `docs/REPO_LAYOUT.md`
+- Canonical artifact surface: `artifacts/graphpilot_edge/README.md`
+- Offline planner/simulator package: `graphpilot_edge/README.md`
+- Android runtime surface: `android-app/README.md`
+- Script entry points: `scripts/README.md`
+- Claim boundary and revision source: `Truth-docs/README.md`
+
+## Common Tasks
+
+### Python verification
+
+Use a clean Python environment invocation because this shell can inherit broken `PYTHONHOME` / `PYTHONPATH` values.
+
+```bash
+env -u PYTHONHOME -u PYTHONPATH python3 -m unittest discover -s tests/graphpilot_edge -v
+env -u PYTHONHOME -u PYTHONPATH python3 -m unittest discover -s scripts/tests -v
+```
+
+### Android verification
 
 ```bash
 cd android-app
-./gradlew :app:assembleDebug
+ANDROID_HOME=/home/aryamavmurthy/android-sdk \
+ANDROID_SDK_ROOT=/home/aryamavmurthy/android-sdk \
+./gradlew app:testDebugUnitTest --tests 'com.qidk.fastvlm.core.graphpilot.*'
 ```
 
-APK output:
-
-- `android-app/app/build/outputs/apk/debug/app-debug.apk`
-
-## Install
+For connected tests, ensure the root VLM daemon is running first:
 
 ```bash
-adb install -r android-app/app/build/outputs/apk/debug/app-debug.apk
+./scripts/start_root_vlm_daemon_adb.sh
+cd android-app
+ANDROID_HOME=/home/aryamavmurthy/android-sdk \
+ANDROID_SDK_ROOT=/home/aryamavmurthy/android-sdk \
+./gradlew app:connectedDebugAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=com.qidk.fastvlm.graphpilot.GraphPilotCoordinatorInstrumentedTest
 ```
 
-Launch app name in launcher:
+### Rebuild checkpoint / paper surface
 
-- **FastVLM Voice**
+```bash
+env -u PYTHONHOME -u PYTHONPATH python3 scripts/build_graphpilot_checkpoint.py
+env -u PYTHONHOME -u PYTHONPATH python3 scripts/build_graphpilot_cases_figures.py
+env -u PYTHONHOME -u PYTHONPATH python3 scripts/build_graphpilot_cases_paper.py
+env -u PYTHONHOME -u PYTHONPATH python3 scripts/build_graphpilot_artifact_pack.py
+```
 
-## Runtime Flow
+## Guardrails
 
-1. Open app and wait for `Ready`.
-2. Press and hold mic button.
-3. Speak question.
-4. Release to send transcript + camera frame to VLM.
-5. Listen to streamed spoken answer.
-6. Optional: tap `Show Text` to inspect generated text.
-
-## Model Configs
-
-- VLM config: `android-app/app/src/main/assets/fastvlm_phase1.json`
-- Whisper config: `android-app/app/src/main/assets/whisper_stt.json`
-
-## Design + Ops Docs
-
-- Design doc: `docs/DESIGN.md`
-- Runbook: `docs/phase1_runbook.md`
-- Validation protocol: `docs/validation_protocol.md`
-
-## Repo Layout
-
-- App: `android-app/app`
-- Whisper Android module: `android-app/whisperlib`
-- Configs: `configs/models`
-- Scripts: `scripts`
-- Docs: `docs`
-
+- Do not move or rename canonical artifact directories under `artifacts/graphpilot_edge/`.
+- Do not replace `Truth-docs/graphpilot_edge_revision_report.pdf` with an untracked local draft.
+- Fail fast on support-safety issues; do not add hidden defaults or silent degradation.
+- Treat the artifact pack as evidence, not as scratch space.
