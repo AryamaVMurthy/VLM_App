@@ -9,6 +9,7 @@ local.properties
 
 # Local artifacts and debug dumps
 /artifacts/*
+!/artifacts/README.md
 !/artifacts/graphpilot_edge/
 /artifacts/graphpilot_edge/*
 !/artifacts/graphpilot_edge/README.md

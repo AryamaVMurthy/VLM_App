@@ -23,6 +23,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from fastvlm_decode_profiles import build_decode_profile
 from fastvlm_budget_controller import choose_visual_token_budget
+from legacy_fastvlm_paths import LEGACY_CASES_BENCHMARK_ROOT
 
 
 RUN_LOG_PATTERN = re.compile(r"^Run log:\s+(?P<path>.+)$", re.MULTILINE)
@@ -410,7 +411,7 @@ def main(argv: list[str]) -> int:
     output_dir = (
         Path(args.output_dir).expanduser().resolve()
         if args.output_dir
-        else Path("artifacts/cases_benchmark")
+        else LEGACY_CASES_BENCHMARK_ROOT
         / datetime.now().strftime("%Y%m%d_%H%M%S")
     )
     output_dir.mkdir(parents=True, exist_ok=True)

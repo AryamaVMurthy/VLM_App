@@ -6,6 +6,7 @@ This index is the fastest way to navigate the GraphPilot-Edge repository without
 
 - Repo overview: `README.md`
 - Repo layout and path-stability rules: `docs/REPO_LAYOUT.md`
+- Artifact retention policy: `docs/ARTIFACT_RETENTION.md`
 - Revision boundary document: `Truth-docs/graphpilot_edge_revision_report.pdf`
 
 ## Canonical Evidence Surface

@@ -28,6 +28,7 @@ Use these pinned outputs as the current repo truth surface:
 - Current checkpoint summary: `artifacts/graphpilot_edge/checkpoints/graphpilot_checkpoint_20260312_195112/summary.json`
 - Current artifact pack summary: `artifacts/graphpilot_edge/reports/artifact_pack_20260312_195226/summary.json`
 - Revision scope boundary: `Truth-docs/graphpilot_edge_revision_report.pdf`
+- Artifact retention policy: `docs/ARTIFACT_RETENTION.md`
 
 ## Start Here
 
@@ -38,6 +39,7 @@ Use these pinned outputs as the current repo truth surface:
 - Android runtime surface: `android-app/README.md`
 - Script entry points: `scripts/README.md`
 - Claim boundary and revision source: `Truth-docs/README.md`
+- Artifact retention and archive rules: `docs/ARTIFACT_RETENTION.md`
 
 ## Common Tasks
 

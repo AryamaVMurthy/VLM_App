@@ -43,6 +43,13 @@ These paths are referenced by tests, reports, builders, and the final paper. If 
 - Artifact pack: `artifacts/graphpilot_edge/reports/artifact_pack_20260312_195226/summary.json`
 - CASES paper: `artifacts/graphpilot_edge/papers/graphpilot_cases_20260312_195225/main.pdf`
 
+## Artifact Retention
+
+- Current GraphPilot evidence stays under `artifacts/graphpilot_edge/`
+- Shared model cache stays under `artifacts/models/`
+- Stale pre-GraphPilot generated outputs are consolidated under `artifacts/legacy_fastvlm/`
+- The governing policy is `docs/ARTIFACT_RETENTION.md`
+
 ## Working Conventions
 
 - Use `env -u PYTHONHOME -u PYTHONPATH python3 ...` for Python commands in this repo.

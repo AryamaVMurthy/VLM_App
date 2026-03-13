@@ -20,6 +20,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from fastvlm_cases_benchmark import extract_run_log_path, parse_run_log
+from legacy_fastvlm_paths import LEGACY_GQA_EVAL_ROOT
 
 DEFAULT_BENCHMARK_ROOT = Path("/home/aryamavmurthy/work/Liquid_benchmarking_image tokens pruning")
 DEFAULT_QUESTIONS_JSON = (
@@ -31,7 +32,7 @@ DEFAULT_RUNNER_SCRIPT = SCRIPT_DIR / "run_fastvlm_litert_npu_adb.sh"
 DEFAULT_MODEL_PATH = (
     SCRIPT_DIR.parent / "artifacts/models/FastVLM-0.5B.qualcomm.sm8750.auxmaskrope_runtime.litertlm"
 )
-DEFAULT_OUTPUT_ROOT = SCRIPT_DIR.parent / "artifacts/gqa_eval"
+DEFAULT_OUTPUT_ROOT = LEGACY_GQA_EVAL_ROOT
 DEFAULT_DEVICE_DIR = "/data/local/tmp/vlm_phase1"
 DEFAULT_DEVICE_IMAGE_PATH = f"{DEFAULT_DEVICE_DIR}/image.jpg"
 DEFAULT_VISUAL_TOKEN_PRUNING_STRATEGY = "prompt_conditioned_v1"

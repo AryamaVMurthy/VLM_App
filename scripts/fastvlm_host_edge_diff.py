@@ -22,6 +22,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from fastvlm_cases_benchmark import extract_run_log_path, parse_pruning_decision_line
+from legacy_fastvlm_paths import LEGACY_HOST_EDGE_DIFF_ROOT
 from run_fastvlm_litert_gqa_eval import (
     DEFAULT_BENCHMARK_ROOT,
     DEFAULT_GQA_SHORT_ANSWER_REGEX,
@@ -46,7 +47,7 @@ from run_fastvlm_litert_gqa_overlap_eval import (
     write_manifest,
 )
 
-DEFAULT_OUTPUT_ROOT = SCRIPT_DIR.parent / "artifacts/host_edge_diff"
+DEFAULT_OUTPUT_ROOT = LEGACY_HOST_EDGE_DIFF_ROOT
 DEFAULT_HOST_BENCH_ROOT = Path(
     "/home/aryamavmurthy/work/Liquid_benchmarking_image tokens pruning"
 )
@@ -649,3 +650,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+from legacy_fastvlm_paths import LEGACY_HOST_EDGE_DIFF_ROOT

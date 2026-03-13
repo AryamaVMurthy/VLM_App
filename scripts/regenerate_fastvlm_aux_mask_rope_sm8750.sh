@@ -4,9 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LITERT_DIR="${ROOT_DIR}/third_party/litert"
 QAIRT_ROOT="${QAIRT_ROOT:-/opt/qcom/aistack/qairt}"
-LOCAL_QAIRT_REPO="${ROOT_DIR}/artifacts/local_qairt_repo"
+LEGACY_ARTIFACT_ROOT="${ROOT_DIR}/artifacts/legacy_fastvlm"
+LOCAL_QAIRT_REPO="${LEGACY_ARTIFACT_ROOT}/local_qairt_repo"
 
-INPUT_AUX_MODEL="${ROOT_DIR}/artifacts/graph_inspect/extracted/Section2_TFLiteModel_tf_lite_aux.tflite"
+INPUT_AUX_MODEL="${LEGACY_ARTIFACT_ROOT}/graph_inspect/extracted/Section2_TFLiteModel_tf_lite_aux.tflite"
 OUTPUT_AUX_MODEL="${ROOT_DIR}/artifacts/models/FastVLM-0.5B.qualcomm.sm8750.aux_mask_rope.tflite"
 SOC_MODEL="SM8750"
 JOBS=6
@@ -132,7 +133,7 @@ if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
 fi
 
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-WORK_DIR="${ROOT_DIR}/artifacts/regeneration/aux_${SOC_MODEL,,}_${TIMESTAMP}"
+WORK_DIR="${LEGACY_ARTIFACT_ROOT}/regeneration/aux_${SOC_MODEL,,}_${TIMESTAMP}"
 mkdir -p "${WORK_DIR}" "$(dirname "${OUTPUT_AUX_MODEL}")"
 
 SELECTIVE_AUX_MODEL="${WORK_DIR}/aux_mask_rope_selective_apply.tflite"

@@ -5,7 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LITERT_DIR="${ROOT_DIR}/third_party/litert"
 LITERT_LM_DIR="${ROOT_DIR}/third_party/litert-lm"
 QAIRT_ROOT="${QAIRT_ROOT:-/opt/qcom/aistack/qairt}"
-LOCAL_QAIRT_REPO="${ROOT_DIR}/artifacts/local_qairt_repo"
+LEGACY_ARTIFACT_ROOT="${ROOT_DIR}/artifacts/legacy_fastvlm"
+LOCAL_QAIRT_REPO="${LEGACY_ARTIFACT_ROOT}/local_qairt_repo"
 
 BASE_MODEL="${ROOT_DIR}/artifacts/models/FastVLM-0.5B.qualcomm.sm8750.litertlm"
 SOURCE_MODEL="${ROOT_DIR}/artifacts/models/FastVLM-0.5B.litertlm"
@@ -197,7 +198,7 @@ HOST_QAIRT_LIB_DIR="$(resolve_host_qairt_lib_dir)" || fail "Missing host QAIRT l
 PLUGIN_LIB_DIR="$(dirname "${COMPILER_PLUGIN_SO}")"
 
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-WORK_DIR="${ROOT_DIR}/artifacts/regeneration/prefill_${SOC_MODEL,,}_${TIMESTAMP}"
+WORK_DIR="${LEGACY_ARTIFACT_ROOT}/regeneration/prefill_${SOC_MODEL,,}_${TIMESTAMP}"
 BASE_DUMP_DIR="${WORK_DIR}/base_dump"
 SOURCE_DUMP_DIR="${WORK_DIR}/source_dump"
 OUTPUT_DUMP_DIR="${WORK_DIR}/output_dump"

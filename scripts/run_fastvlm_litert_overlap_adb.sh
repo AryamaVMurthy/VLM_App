@@ -7,7 +7,8 @@ source "${ROOT_DIR}/scripts/shell_quote_lib.sh"
 LITERT_LM_DIR="${ROOT_DIR}/third_party/litert-lm"
 LITERT_DIR="${ROOT_DIR}/third_party/litert"
 QAIRT_ROOT="${QAIRT_ROOT:-/opt/qcom/aistack/qairt}"
-LOCAL_QAIRT_REPO="${ROOT_DIR}/artifacts/local_qairt_repo"
+LEGACY_ARTIFACT_ROOT="${ROOT_DIR}/artifacts/legacy_fastvlm"
+LOCAL_QAIRT_REPO="${LEGACY_ARTIFACT_ROOT}/local_qairt_repo"
 MODEL_HOST_PATH="${ROOT_DIR}/artifacts/models/FastVLM-0.5B.qualcomm.sm8750.auxmaskrope_runtime.litertlm"
 DECODE_MODEL_HOST_PATH="${ROOT_DIR}/artifacts/models/FastVLM-0.5B.litertlm"
 
@@ -299,7 +300,7 @@ fi
 
 DEVICE_IMAGE_PATHS_CSV="$(IFS=,; echo "${DEVICE_IMAGE_PATHS[*]}")"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-LOG_DIR="${ROOT_DIR}/artifacts/logs"
+LOG_DIR="${LEGACY_ARTIFACT_ROOT}/logs"
 mkdir -p "${LOG_DIR}"
 RUN_LOG="${LOG_DIR}/adb_overlap_run_${TIMESTAMP}.log"
 

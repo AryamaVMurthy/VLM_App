@@ -18,6 +18,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from fastvlm_cases_benchmark import extract_run_log_path, parse_run_log
+from legacy_fastvlm_paths import LEGACY_COCO_EVAL_ROOT
 from run_fastvlm_litert_gqa_eval import (
     DEFAULT_BENCHMARK_ROOT,
     DEFAULT_MODEL_PATH,
@@ -34,7 +35,7 @@ from run_fastvlm_litert_gqa_eval import (
 
 DEFAULT_RUNNER_SCRIPT = SCRIPT_DIR / "run_fastvlm_litert_npu_adb.sh"
 DEFAULT_IMAGE_CACHE = DEFAULT_BENCHMARK_ROOT / "bench_data/coco_karpathy/image_cache"
-DEFAULT_OUTPUT_ROOT = SCRIPT_DIR.parent / "artifacts/coco_eval"
+DEFAULT_OUTPUT_ROOT = LEGACY_COCO_EVAL_ROOT
 DEFAULT_SPLIT = "test"
 DEFAULT_SAMPLE_N = 100
 DEFAULT_MAX_OUTPUT_TOKENS = 32

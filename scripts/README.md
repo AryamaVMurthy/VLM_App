@@ -35,3 +35,4 @@ This directory contains the operational entry points for GraphPilot-Edge.
 - Run Python scripts with `env -u PYTHONHOME -u PYTHONPATH python3 ...`.
 - Builders should fail fast if required inputs are missing.
 - Generated files belong under `artifacts/graphpilot_edge/`, not under `scripts/`.
+- Legacy FastVLM scripts now default to `artifacts/legacy_fastvlm/` for archived pre-GraphPilot outputs.

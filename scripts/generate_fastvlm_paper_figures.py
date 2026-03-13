@@ -15,10 +15,11 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from fastvlm_host_edge_diff import parse_event_stream
+from legacy_fastvlm_paths import LEGACY_ANALYSIS_ROOT
 
 DEFAULT_PARTITION_JSON = (
-    SCRIPT_DIR.parent
-    / "artifacts/analysis/cases_paper_bundle_20260310_030627/heterogeneous_partition_mapping.json"
+    LEGACY_ANALYSIS_ROOT
+    / "cases_paper_bundle_20260310_030627/heterogeneous_partition_mapping.json"
 )
 
 CPU_COLOR = "#d95f02"

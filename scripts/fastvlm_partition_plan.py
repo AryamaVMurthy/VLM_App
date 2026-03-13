@@ -9,6 +9,12 @@ import re
 import sys
 from pathlib import Path
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from legacy_fastvlm_paths import LEGACY_GRAPH_INSPECT_ROOT
+
 
 MODEL_TYPE_PATTERN = re.compile(r"model_type:\s+(TF_LITE_[A-Z_]+)")
 DELEGATE_PATTERN = re.compile(
@@ -164,7 +170,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--log", required=True, help="Runtime log path")
     parser.add_argument(
         "--graph-dir",
-        default="artifacts/graph_inspect/full",
+        default=str(LEGACY_GRAPH_INSPECT_ROOT / "full"),
         help="Directory containing Section*_TFLiteModel_*.full.txt files",
     )
     parser.add_argument("--output", help="Optional JSON output path")
